@@ -1,0 +1,9 @@
+---
+title: Media Stack
+theme: dark
+color: slate
+
+layout:
+  Media:
+    style: row
+    columns: 3

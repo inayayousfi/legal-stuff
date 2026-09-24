@@ -1,6 +1,90 @@
 name: media-stack
 
 services:
+  gluetun:
+    image: qmcgaw/gluetun:latest@sha256:12df8b20528d4cd5e9b6e827d40f2886cf78e53e7e9afc750050648c31183793
+    container_name: gluetun
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      VPN_SERVICE_PROVIDER: "${VPN_SERVICE_PROVIDER:-}"
+      VPN_TYPE: "${VPN_TYPE:-openvpn}"
+      OPENVPN_USER: "${VPN_OPENVPN_USER:-}"
+      OPENVPN_PASSWORD: "${VPN_OPENVPN_PASSWORD:-}"
+      SERVER_COUNTRIES: "${VPN_SERVER_COUNTRIES:-}"
+      OPENVPN_PROTOCOL: udp
+      FIREWALL_INPUT_PORTS: "8080,6881"
+      TZ: "${TZ}"
+    ports:
+      - "8080:8080/tcp"
+      - "6881:6881/tcp"
+      - "6881:6881/udp"
+    volumes:
+      - "${CONFIG_DIR}/gluetun:/gluetun"
+    networks:
+      default:
+        aliases:
+          - qbittorrent
+
+  tailscale-vpn:
+    image: tailscale/tailscale:latest@sha256:2667499ed87ae29218f292556ba062918402dd5e92e93637af14867e4df12dd3
+    container_name: tailscale-vpn
+    hostname: media-stack-qbittorrent
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      TS_AUTHKEY: "${TAILSCALE_AUTH_KEY:-}"
+      TS_AUTH_ONCE: "true"
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "false"
+      TS_EXTRA_ARGS: "--exit-node=${TAILSCALE_EXIT_NODE:-} --exit-node-allow-lan-access=true"
+    ports:
+      - "8080:8080/tcp"
+      - "6881:6881/tcp"
+      - "6881:6881/udp"
+    volumes:
+      - "${CONFIG_DIR}/tailscale:/var/lib/tailscale"
+    networks:
+      default:
+        aliases:
+          - qbittorrent
+
+  homepage:
+    image: ghcr.io/gethomepage/homepage:latest@sha256:643bd0be730d40f69d58028a55d1a896739333e8815786df42bc97f109ecbe61
+    container_name: homepage
+    restart: unless-stopped
+    environment:
+      HOMEPAGE_ALLOWED_HOSTS: "${ADMIN_ACCESS_HOST}:3000"
+      HOMEPAGE_VAR_HOST: "${ADMIN_ACCESS_HOST}"
+      PUID: "${PUID}"
+      PGID: "${PGID}"
+    ports:
+      - "3000:3000/tcp"
+    volumes:
+      - "${CONFIG_DIR}/homepage:/app/config"
+    depends_on:
+      - glances
+
+  glances:
+    image: nicolargo/glances:latest-full@sha256:c47322ae60260f6039302dde576c8250f28e67cea77f5b93a270e6cd90995665
+    container_name: glances
+    restart: unless-stopped
+    pid: host
+    environment:
+      GLANCES_OPT: "-w"
+      TZ: "${TZ}"
+    volumes:
+      - "${MEDIA_DIR}:/media:ro"
+    security_opt:
+      - no-new-privileges:true
+
   jellyfin:
     image: jellyfin/jellyfin:10@sha256:aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db
     container_name: jellyfin
@@ -26,10 +110,7 @@ services:
       QBT_LEGAL_NOTICE: "${QBT_LEGAL_NOTICE}"
       QBT_WEBUI_PORT: "8080"
       QBT_TORRENTING_PORT: "6881"
-    ports:
-      - "127.0.0.1:8080:8080/tcp"
-      - "6881:6881/tcp"
-      - "6881:6881/udp"
+    network_mode: "service:${VPN_GATEWAY_SERVICE}"
     volumes:
       - "${CONFIG_DIR}/qbittorrent:/config"
       - "${MEDIA_DIR}:/media"
@@ -43,7 +124,7 @@ services:
       PGID: "${PGID}"
       TZ: "${TZ}"
     ports:
-      - "127.0.0.1:9696:9696/tcp"
+      - "9696:9696/tcp"
     volumes:
       - "${CONFIG_DIR}/prowlarr:/config"
 
@@ -53,7 +134,7 @@ services:
     restart: unless-stopped
     environment: *linuxserver-environment
     ports:
-      - "127.0.0.1:8989:8989/tcp"
+      - "8989:8989/tcp"
     volumes:
       - "${CONFIG_DIR}/sonarr:/config"
       - "${MEDIA_DIR}:/media"
@@ -67,7 +148,7 @@ services:
     restart: unless-stopped
     environment: *linuxserver-environment
     ports:
-      - "127.0.0.1:7878:7878/tcp"
+      - "7878:7878/tcp"
     volumes:
       - "${CONFIG_DIR}/radarr:/config"
       - "${MEDIA_DIR}:/media"

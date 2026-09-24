@@ -1,6 +1,6 @@
 # Media Stack
 
-A local Docker Compose stack for Jellyfin, qBittorrent, Prowlarr, Sonarr, Radarr, and Recyclarr.
+A local Docker Compose stack for Jellyfin, qBittorrent, Prowlarr, Sonarr, Radarr, Recyclarr, and a Homepage dashboard.
 
 Every media-aware container sees the same `/media` path. This avoids remote path mappings and allows hardlinks between downloads and libraries.
 
@@ -10,16 +10,38 @@ The setup supports Windows with Docker Desktop and native Linux.
 
 | Service | Purpose | Address |
 | --- | --- | --- |
-| Jellyfin | Media server | `http://localhost:8096` |
-| qBittorrent | Download client | `http://localhost:8080` |
-| Prowlarr | Indexer manager | `http://localhost:9696` |
-| Sonarr | Series manager | `http://localhost:8989` |
-| Radarr | Movie manager | `http://localhost:7878` |
+| Homepage | Links and Docker resource overview | `http://HOSTNAME:3000` |
+| Gluetun or Tailscale | Selectable qBittorrent VPN gateway | No web interface |
+| Jellyfin | Media server | `http://HOSTNAME:8096` |
+| qBittorrent | Download client | `http://HOSTNAME:8080` |
+| Prowlarr | Indexer manager | `http://HOSTNAME:9696` |
+| Sonarr | Series manager | `http://HOSTNAME:8989` |
+| Radarr | Movie manager | `http://HOSTNAME:7878` |
 | Recyclarr | Quality profile synchronization | No web interface |
 
-Only Jellyfin is exposed to the local network. The administration interfaces listen on `127.0.0.1`.
+Jellyfin and the administration interfaces listen on every host network connection. On a Tailscale host, setup detects its MagicDNS name and prints the complete remote addresses. Protect every account with a strong password.
 
 The qBittorrent traffic port `6881` remains exposed for incoming torrent connections.
+
+qBittorrent has no independent container network connection. It shares the selected VPN gateway. Sonarr and Radarr continue to use `qbittorrent` as the download-client host name; that name points to the active gateway's shared network location.
+
+Setup offers NordVPN, Proton VPN, Surfshark, Private Internet Access, a Tailscale exit node, and another Gluetun OpenVPN provider. The Gluetun choices use OpenVPN UDP and no country filter by default. Gluetun selects from all matching provider servers.
+
+NordVPN requires its generated service username and password from:
+
+```text
+Nord Account > NordVPN > Advanced Settings > Set up NordVPN manually > Service credentials
+```
+
+Proton VPN uses its separate OpenVPN username and password. Surfshark uses credentials generated under `VPN > Manual setup > Desktop or mobile > OpenVPN > Credentials`. Private Internet Access uses the assigned service username beginning with `p` and its service password. The provider-specific guide appears before either credential prompt.
+
+The Tailscale choice requests a one-off, non-ephemeral auth key and the exact name or Tailscale IP of an existing exit node. Setup verifies that exit node before starting qBittorrent. If the Tailscale gateway later restarts, qBittorrent remains without networking, but the stack may need to be restarted to reconnect qBittorrent to the replacement network namespace.
+
+The selected gateway and its required secrets are stored in `.env`. Gluetun's firewall provides the kill switch for its providers. The Tailscale path starts qBittorrent only after the fixed exit node reports online and fails closed if its shared gateway network disappears.
+
+NordVPN does not provide inbound port forwarding. Downloads still work, but incoming peer connectivity and seeding can be weaker than with a provider that supports a forwarded torrent port.
+
+Homepage provides one page with links to every web interface. Its Glances widget reports CPU and memory use from Docker's Linux environment, not the complete Windows host. Its media-disk figure reports the capacity and free space of the filesystem containing the selected media directory, not only the size of files inside that directory. Network usage is omitted because accurate Docker-environment network totals require broader container permissions.
 
 ## Media layout
 
@@ -83,18 +105,21 @@ The script performs these checks and actions:
 1. Verifies that Docker and Docker Compose are available.
 2. Asks for the media directory.
 3. Presents a `Y/n` confirmation for the qBittorrent legal notice.
-4. Creates the media and configuration directories.
-5. Writes the local `.env`.
-6. Starts Jellyfin, qBittorrent, Prowlarr, Sonarr, and Radarr.
-7. Displays the complete manual configuration checklist.
-8. Stores the chosen local administration credentials in `.env`.
-9. Requests the Sonarr and Radarr API keys.
-10. Applies the Recyclarr profiles.
-11. Installs automatic startup.
+4. Offers the supported VPN gateways, shows the selected credential instructions, and requests only that gateway's required values.
+5. Creates the media and configuration directories.
+6. Writes the initial local `.env`, verifies the selected VPN route, and starts Homepage, Glances, Jellyfin, qBittorrent, Prowlarr, Sonarr, and Radarr.
+7. Displays qBittorrent's generated `admin` password and remote Web UI address.
+8. Requests each permanent administration login only when its application is ready to configure.
+9. Stores the chosen local administration credentials in `.env` and saves progress after each manual step.
+10. Requests the Sonarr and Radarr API keys.
+11. Applies the Recyclarr profiles.
+12. Installs automatic startup.
 
-A completed setup overwrites `.env`. Existing application configuration under `config/` remains available.
+Setup reuses values already present in `.env`, including credentials and API keys. Existing application configuration under `config/` remains available.
 
-An interrupted setup restores the previous `.env`.
+An interrupted setup keeps `.env` and completed-step checkpoints in `config/setup-state.json`. Run the same setup command again to continue. Docker Compose operations and automatic-start installation are safe to repeat.
+
+Leading and trailing spaces are removed from the media-directory input. Password prompts display `*` characters instead of showing the password itself or leaving the input visually blank.
 
 ## Manual application setup
 
@@ -108,17 +133,15 @@ Open this link:
 http://localhost:8080
 ```
 
-The script reads the generated temporary password from the container logs and displays it with the `admin` username.
+The script reads the generated temporary password from the container logs and displays it with the `admin` username. On a fresh setup, setup stops with an error if it cannot obtain this password instead of continuing without a usable login.
 
-After signing in:
+The CLI stores the chosen username and password as `QBIT_USER` and `QBIT_PASS` in `.env` as a private reference. After signing in with the temporary `admin` login:
 
 1. Open `Tools > Options > Web UI`.
-2. Find the `Authentication` section.
-3. Set the username from `QBIT_USER` in `.env`.
-4. Set the password from `QBIT_PASS` in `.env`.
-5. Open the `Downloads` section.
-6. Set `Saving Management > Default Save Path` to `/media/Downloads`.
-7. Click `Apply`, then `OK`.
+2. Under `Authentication`, replace the temporary username and password with the username and password chosen in the CLI.
+3. Open the `Downloads` section.
+4. Set `Saving Management > Default Save Path` to `/media/Downloads`.
+5. Click `Apply`, then `OK`.
 
 ### Sonarr
 
@@ -128,20 +151,20 @@ Open:
 http://localhost:8989
 ```
 
-1. Complete first-run authentication with `SONARR_USER` and `SONARR_PASS` from `.env`.
+1. Complete first-run authentication with the username and password requested by the CLI.
 2. Open `Settings > Media Management`.
 3. Under `Root Folders`, click `Add Root Folder`.
 4. Select `/media/Series` and save it.
 5. Open `Settings > Download Clients`.
 6. Click `Add`, then select qBittorrent.
 7. Set `Host` to `qbittorrent` and `Port` to `8080`.
-8. Use `QBIT_USER` and `QBIT_PASS` from `.env`.
+8. Use the username and password chosen during qBittorrent setup.
 9. Set `Category` to `sonarr`.
 10. Click `Test`, then `Save`.
 
 Use `qbittorrent`, not `localhost`. Inside the Sonarr container, `localhost` means Sonarr itself.
 
-Copy the API key for the next terminal prompt:
+Sonarr creates its API key automatically. Copy it for the next terminal prompt:
 
 ```text
 Settings > General > Security > API Key
@@ -155,18 +178,18 @@ Open:
 http://localhost:7878
 ```
 
-1. Complete first-run authentication with `RADARR_USER` and `RADARR_PASS` from `.env`.
+1. Complete first-run authentication with the username and password requested by the CLI.
 2. Open `Settings > Media Management`.
 3. Under `Root Folders`, click `Add Root Folder`.
 4. Select `/media/Movies` and save it.
 5. Open `Settings > Download Clients`.
 6. Click `Add`, then select qBittorrent.
 7. Set `Host` to `qbittorrent` and `Port` to `8080`.
-8. Use `QBIT_USER` and `QBIT_PASS` from `.env`.
+8. Use the username and password chosen during qBittorrent setup.
 9. Set `Category` to `radarr`.
 10. Click `Test`, then `Save`.
 
-Copy the API key from:
+Radarr creates its API key automatically. Copy it from:
 
 ```text
 Settings > General > Security > API Key
@@ -180,16 +203,16 @@ Open:
 http://localhost:9696
 ```
 
-1. Complete first-run authentication with `PROWLARR_USER` and `PROWLARR_PASS` from `.env`.
+1. Complete first-run authentication with the username and password requested by the CLI.
 2. Open `Settings > Apps`.
 3. Add Sonarr with `Full Sync`.
 4. Set `Prowlarr Server` to `http://prowlarr:9696`.
 5. Set `Sonarr Server` to `http://sonarr:8989`.
-6. Use `SONARR_API_KEY` from `.env`, then test and save.
+6. Use the Sonarr API key copied during Sonarr setup, then test and save.
 7. Add Radarr with `Full Sync`.
 8. Set `Prowlarr Server` to `http://prowlarr:9696`.
 9. Set `Radarr Server` to `http://radarr:7878`.
-10. Use `RADARR_API_KEY` from `.env`, then test and save.
+10. Use the Radarr API key copied during Radarr setup, then test and save.
 11. Open `Indexers`, add your indexers, then test each one.
 
 ### Jellyfin
@@ -202,7 +225,7 @@ http://localhost:8096
 
 1. Select the display language.
 2. Create the Jellyfin administrator account.
-3. Do not reuse credentials from `.env` for Jellyfin.
+3. Use a different password from the other applications.
 4. Add a Movies library using `/media/Movies`.
 5. Add a Shows library using `/media/Series`.
 6. Complete the remaining setup wizard pages.
@@ -253,6 +276,8 @@ python3 media_stack.py setup -h
 python3 media_stack.py start -h
 python3 media_stack.py stop -h
 python3 media_stack.py status -h
+python3 media_stack.py vpn-status -h
+python3 media_stack.py show -h
 ```
 
 Start the stack and synchronize Recyclarr:
@@ -268,6 +293,22 @@ Show container status:
 ```bash
 python3 media_stack.py status
 ```
+
+Check the selected VPN gateway (Gluetun health or Tailscale exit-node availability):
+
+```bash
+python3 media_stack.py vpn-status
+```
+
+List saved setting groups, or display one group (including any saved password or API key):
+
+```bash
+python3 media_stack.py show
+python3 media_stack.py show jellyfin
+python3 media_stack.py show vpn
+```
+
+The values appear in the terminal, so use this on a private screen.
 
 Stop the stack:
 
@@ -378,10 +419,10 @@ An older `.env` also remains accessible in the public Git history. Credentials f
 
 ## Security notes
 
-qBittorrent is not routed through a VPN.
+qBittorrent is routed through the selected gateway. Gluetun requires `NET_ADMIN`; the Tailscale gateway requires `NET_ADMIN` and `NET_RAW`. Both require access to `/dev/net/tun`. No other application service shares that gateway network.
 
 Jellyfin is available to the local network. Protect its administrator account with a strong password.
 
-Sonarr, Radarr, Prowlarr, and qBittorrent are accessible only from the Docker host.
+Sonarr, Radarr, Prowlarr, and qBittorrent are accessible through every network connected to the Docker host. Use strong, distinct passwords and restrict host firewall access if a connected network is not trusted.
 
 Jellyfin does not officially support Docker on Windows or macOS. This does not mean it cannot work, so the setup remains worth trying. Some features, particularly hardware-accelerated transcoding, may still fail on those hosts.

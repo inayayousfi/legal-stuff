@@ -1,0 +1,10 @@
+---
+- glances:
+    url: http://glances:61208
+    version: 4
+    label: Docker
+    cpu: true
+    mem: true
+    uptime: true
+    disk: /media
+    expanded: true

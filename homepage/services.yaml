@@ -1,0 +1,22 @@
+---
+- Media:
+    - Jellyfin:
+        icon: jellyfin.png
+        href: http://{{HOMEPAGE_VAR_HOST}}:8096
+        description: Watch movies and series
+    - qBittorrent:
+        icon: qbittorrent.png
+        href: http://{{HOMEPAGE_VAR_HOST}}:8080
+        description: Manage downloads
+    - Sonarr:
+        icon: sonarr.png
+        href: http://{{HOMEPAGE_VAR_HOST}}:8989
+        description: Manage series
+    - Radarr:
+        icon: radarr.png
+        href: http://{{HOMEPAGE_VAR_HOST}}:7878
+        description: Manage movies
+    - Prowlarr:
+        icon: prowlarr.png
+        href: http://{{HOMEPAGE_VAR_HOST}}:9696
+        description: Manage indexers
