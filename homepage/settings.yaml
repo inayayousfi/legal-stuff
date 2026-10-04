@@ -7,3 +7,7 @@ layout:
   Media:
     style: row
     columns: 3
+  Admin:
+    style: row
+    columns: 3
+    initiallyCollapsed: true

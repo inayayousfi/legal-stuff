@@ -1,0 +1,10 @@
+    - Gluetun:
+        icon: gluetun.png
+        description: qBittorrent and Prowlarr VPN connection
+        server: media-stack
+        container: gluetun
+        href: http://{{HOMEPAGE_VAR_HOST}}:8090
+        widget:
+          type: gluetun
+          url: http://gluetun:8000
+          key: "{{HOMEPAGE_VAR_GLUETUN_API_KEY}}"

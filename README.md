@@ -10,9 +10,12 @@ The setup supports Windows with Docker Desktop and native Linux.
 
 | Service | Purpose | Address |
 | --- | --- | --- |
-| Homepage | Links and Docker resource overview | `http://HOSTNAME:3000` |
+| Homepage | Links, container status, VPN status and Docker resource overview | `http://HOSTNAME:3000` |
+| Docker socket proxy | Read-only container status for Homepage | No web interface |
 | Gluetun or Tailscale | Selectable qBittorrent VPN gateway | No web interface |
 | Jellyfin | Media server | `http://HOSTNAME:8096` |
+| Seerr | Movie and series requests sent to Radarr and Sonarr | `http://HOSTNAME:5055` |
+| VPN country | Gluetun country selection, linked from Homepage's VPN card | `http://HOSTNAME:8090` |
 | qBittorrent | Download client | `http://HOSTNAME:8080` |
 | Prowlarr | Indexer manager | `http://HOSTNAME:9696` |
 | Sonarr | Series manager | `http://HOSTNAME:8989` |
@@ -23,7 +26,7 @@ Jellyfin and the administration interfaces listen on every host network connecti
 
 The qBittorrent traffic port `6881` remains exposed for incoming torrent connections.
 
-qBittorrent has no independent container network connection. It shares the selected VPN gateway. Sonarr and Radarr continue to use `qbittorrent` as the download-client host name; that name points to the active gateway's shared network location.
+qBittorrent and Prowlarr have no independent container network connection. They share the selected VPN gateway, so torrent traffic and indexer searches leave through the VPN and bypass internet-provider DNS blocking. Sonarr and Radarr continue to use `qbittorrent` and `prowlarr` as host names; both names point to the active gateway's shared network location. When the VPN is down, Prowlarr is unreachable, so Sonarr and Radarr cannot search.
 
 Setup offers NordVPN, Proton VPN, Surfshark, Private Internet Access, a Tailscale exit node, and another Gluetun OpenVPN provider. The Gluetun choices use OpenVPN UDP and no country filter by default. Gluetun selects from all matching provider servers.
 
@@ -35,13 +38,13 @@ Nord Account > NordVPN > Advanced Settings > Set up NordVPN manually > Service c
 
 Proton VPN uses its separate OpenVPN username and password. Surfshark uses credentials generated under `VPN > Manual setup > Desktop or mobile > OpenVPN > Credentials`. Private Internet Access uses the assigned service username beginning with `p` and its service password. The provider-specific guide appears before either credential prompt.
 
-The Tailscale choice requests a one-off, non-ephemeral auth key and the exact name or Tailscale IP of an existing exit node. Setup verifies that exit node before starting qBittorrent. If the Tailscale gateway later restarts, qBittorrent remains without networking, but the stack may need to be restarted to reconnect qBittorrent to the replacement network namespace.
+The Tailscale choice requests a one-off, non-ephemeral auth key and the exact name or Tailscale IP of an existing exit node. Setup starts every other service first, then waits with no time limit until the VPN route is ready before starting qBittorrent and Prowlarr. The same applies to Gluetun. If the Tailscale gateway later restarts, qBittorrent remains without networking, but the stack may need to be restarted to reconnect qBittorrent to the replacement network namespace.
 
 The selected gateway and its required secrets are stored in `.env`. Gluetun's firewall provides the kill switch for its providers. The Tailscale path starts qBittorrent only after the fixed exit node reports online and fails closed if its shared gateway network disappears.
 
 NordVPN does not provide inbound port forwarding. Downloads still work, but incoming peer connectivity and seeding can be weaker than with a provider that supports a forwarded torrent port.
 
-Homepage provides one page with links to every web interface. Its Glances widget reports CPU and memory use from Docker's Linux environment, not the complete Windows host. Its media-disk figure reports the capacity and free space of the filesystem containing the selected media directory, not only the size of files inside that directory. Network usage is omitted because accurate Docker-environment network totals require broader container permissions.
+Homepage provides one page with links to every web interface and the running state of each container. Jellyfin and Seerr appear first; the administration interfaces and the VPN status are in a folded Admin group. It reads that state through a socket proxy that allows only read requests about containers, so Homepage cannot start, stop or create containers. With Gluetun, a VPN panel shows the public address and country through Gluetun's control server. Setup generates the key for that panel and allows it to read only the public address. The VPN country page lists the provider's OpenVPN countries from the installed Gluetun, reconnects Gluetun to the selected country without restarting qBittorrent or Prowlarr, and saves the choice in `config/vpn-country`. `start` copies that choice into `.env` before starting Gluetun, and the page reapplies it if Gluetun restarts with another country. The page has its own Gluetun key, limited to reading the public address and reading or changing VPN settings, and it cannot read `.env`. Anyone who can open the page can change the VPN country. Its Glances widget reports CPU and memory use from Docker's Linux environment, not the complete Windows host. Its media-disk figure reports the capacity and free space of the filesystem containing the selected media directory, not only the size of files inside that directory. Network usage is omitted because accurate Docker-environment network totals require broader container permissions.
 
 ## Media layout
 
@@ -107,13 +110,14 @@ The script performs these checks and actions:
 3. Presents a `Y/n` confirmation for the qBittorrent legal notice.
 4. Offers the supported VPN gateways, shows the selected credential instructions, and requests only that gateway's required values.
 5. Creates the media and configuration directories.
-6. Writes the initial local `.env`, verifies the selected VPN route, and starts Homepage, Glances, Jellyfin, qBittorrent, Prowlarr, Sonarr, and Radarr.
+6. Writes the initial local `.env`, starts the selected VPN gateway, the Docker socket proxy, Homepage, Glances, Jellyfin, Sonarr, Radarr, and Seerr, then starts qBittorrent and Prowlarr once the VPN route is ready.
 7. Displays qBittorrent's generated `admin` password and remote Web UI address.
 8. Requests each permanent administration login only when its application is ready to configure.
 9. Stores the chosen local administration credentials in `.env` and saves progress after each manual step.
 10. Requests the Sonarr and Radarr API keys.
 11. Applies the Recyclarr profiles.
-12. Installs automatic startup.
+12. Shows the Seerr connection steps with the saved Jellyfin login and the Sonarr and Radarr API keys.
+13. Installs automatic startup.
 
 Setup reuses values already present in `.env`, including credentials and API keys. Existing application configuration under `config/` remains available.
 
@@ -277,7 +281,7 @@ python3 media_stack.py start -h
 python3 media_stack.py stop -h
 python3 media_stack.py status -h
 python3 media_stack.py vpn-status -h
-python3 media_stack.py show -h
+python3 media_stack.py credentials -h
 ```
 
 Start the stack and synchronize Recyclarr:
@@ -300,15 +304,15 @@ Check the selected VPN gateway (Gluetun health or Tailscale exit-node availabili
 python3 media_stack.py vpn-status
 ```
 
-List saved setting groups, or display one group (including any saved password or API key):
+List saved groups, or display one group (including any saved password or API key) and change its credentials:
 
 ```bash
-python3 media_stack.py show
-python3 media_stack.py show jellyfin
-python3 media_stack.py show vpn
+python3 media_stack.py credentials
+python3 media_stack.py credentials jellyfin
+python3 media_stack.py credentials vpn
 ```
 
-The values appear in the terminal, so use this on a private screen.
+After the values are shown, answer `y` to replace credentials one by one; press Enter to keep a saved value. Answer `n` or press Enter to leave everything unchanged. This updates `.env` only, so change the password in the application as well. VPN credentials and the Sonarr and Radarr API keys take effect at the next `start`. The Jellyfin values belong to the administrator account, which can create other Jellyfin users and reset their passwords in Jellyfin's Dashboard. The values appear in the terminal, so use this on a private screen.
 
 Stop the stack:
 

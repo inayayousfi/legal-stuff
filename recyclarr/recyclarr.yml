@@ -9,7 +9,7 @@ sonarr:
       type: series
 
     quality_profiles:
-      - trash_id: c4cadd6b35b95f62c3d47a408e53e2f # WEB-2160p (Combined)
+      - trash_id: c4cadd6b35b95f62c3d47a408e53e2f7 # WEB-2160p (Combined)
         name: 4K Progressive
         reset_unmatched_scores:
           enabled: true

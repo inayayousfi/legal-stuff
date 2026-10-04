@@ -8,6 +8,7 @@ import getpass
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import socket
@@ -26,6 +27,7 @@ ENV_FILE = ROOT / ".env"
 CONFIG_TEMPLATE = ROOT / "recyclarr" / "recyclarr.yml"
 HOMEPAGE_TEMPLATE_DIR = ROOT / "homepage"
 CORE_SERVICES = (
+    "dockerproxy",
     "homepage",
     "glances",
     "jellyfin",
@@ -33,13 +35,44 @@ CORE_SERVICES = (
     "prowlarr",
     "sonarr",
     "radarr",
+    "seerr",
 )
 API_KEY_PATTERN = re.compile(r"^[0-9a-fA-F]{32}$")
 QBIT_TEMP_PASSWORD_PATTERN = re.compile(
     r"temporary password is provided for this session:\s*(\S+)", re.IGNORECASE
 )
+VPN_SERVICES = ("qbittorrent", "prowlarr")
+GLUETUN_ONLY_SERVICES = ("vpn-country",)
 DOCKER_WAIT_SECONDS = 300
-VPN_WAIT_SECONDS = 180
+RENAMED_ENV_KEYS = {
+    "JELLYFIN_USER": "JELLYFIN_ADMIN_USER",
+    "JELLYFIN_PASS": "JELLYFIN_ADMIN_PASS",
+}
+CREDENTIAL_GROUPS = {
+    "qbittorrent": (("Username", "QBIT_USER", "text"), ("Password", "QBIT_PASS", "password")),
+    "sonarr": (("Username", "SONARR_USER", "text"), ("Password", "SONARR_PASS", "password"),
+               ("API key", "SONARR_API_KEY", "api_key")),
+    "radarr": (("Username", "RADARR_USER", "text"), ("Password", "RADARR_PASS", "password"),
+               ("API key", "RADARR_API_KEY", "api_key")),
+    "prowlarr": (("Username", "PROWLARR_USER", "text"), ("Password", "PROWLARR_PASS", "password")),
+    "jellyfin": (("Administrator username", "JELLYFIN_ADMIN_USER", "text"),
+                 ("Administrator password", "JELLYFIN_ADMIN_PASS", "password")),
+    "vpn": (("Provider", "VPN_SERVICE_PROVIDER", None), ("Gateway", "VPN_GATEWAY_SERVICE", None),
+            ("Server countries", "VPN_SERVER_COUNTRIES", None),
+            ("Service username", "VPN_OPENVPN_USER", "text"),
+            ("Service password", "VPN_OPENVPN_PASSWORD", "password"),
+            ("Exit node", "TAILSCALE_EXIT_NODE", "text"), ("Auth key", "TAILSCALE_AUTH_KEY", "password")),
+    "access": (("Host", "ADMIN_ACCESS_HOST", None), ("Media directory", "MEDIA_DIR", None),
+               ("Configuration directory", "CONFIG_DIR", None)),
+}
+STACK_USED_KEYS = {
+    "SONARR_API_KEY",
+    "RADARR_API_KEY",
+    "VPN_OPENVPN_USER",
+    "VPN_OPENVPN_PASSWORD",
+    "TAILSCALE_EXIT_NODE",
+    "TAILSCALE_AUTH_KEY",
+}
 VPN_PROVIDER_OPTIONS = (
     ("1", "nordvpn", "NordVPN"),
     ("2", "protonvpn", "Proton VPN"),
@@ -144,6 +177,9 @@ def read_env_values(path: Path = ENV_FILE) -> dict[str, str]:
         except json.JSONDecodeError:
             values[key] = raw_value
         values[key] = str(values[key]).replace("$$", "$")
+    if any(old in values for old in RENAMED_ENV_KEYS):
+        values = {RENAMED_ENV_KEYS.get(key, key): value for key, value in values.items()}
+        write_env(path, values)
     return values
 
 
@@ -393,7 +429,7 @@ def ensure_credentials(
         ("SONARR", "Sonarr"),
         ("RADARR", "Radarr"),
         ("PROWLARR", "Prowlarr"),
-        ("JELLYFIN", "Jellyfin"),
+        ("JELLYFIN_ADMIN", "Jellyfin administrator"),
     ):
         if selected_keys is not None and key not in selected_keys:
             continue
@@ -420,6 +456,8 @@ def create_directories(media_dir: Path, config_dir: Path) -> None:
         "homepage",
         "gluetun",
         "tailscale",
+        "seerr",
+        "vpn-country",
     ):
         (config_dir / directory).mkdir(parents=True, exist_ok=True)
 
@@ -430,11 +468,100 @@ def copy_recyclarr_config(config_dir: Path) -> None:
     shutil.copyfile(CONFIG_TEMPLATE, destination)
 
 
-def copy_homepage_config(config_dir: Path) -> None:
+def ensure_gluetun_api_keys(values: dict[str, str]) -> bool:
+    if values.get("VPN_GATEWAY_SERVICE") != "gluetun":
+        return False
+    changed = False
+    for key in ("GLUETUN_API_KEY", "GLUETUN_CONTROL_KEY"):
+        if not values.get(key):
+            values[key] = secrets.token_urlsafe(32)
+            changed = True
+    return changed
+
+
+def write_gluetun_auth(config_dir: Path, values: Mapping[str, str]) -> bool:
+    roles = (
+        ("homepage", ("GET /v1/publicip/ip",), values["GLUETUN_API_KEY"]),
+        (
+            "vpn-country",
+            ("GET /v1/publicip/ip", "GET /v1/vpn/settings", "PUT /v1/vpn/settings"),
+            values["GLUETUN_CONTROL_KEY"],
+        ),
+    )
+    content = "\n".join(
+        "[[roles]]\n"
+        f"name = {json.dumps(name)}\n"
+        f"routes = {json.dumps(list(routes))}\n"
+        'auth = "apikey"\n'
+        f"apikey = {json.dumps(api_key)}\n"
+        for name, routes, api_key in roles
+    )
+    destination = config_dir / "gluetun" / "auth" / "config.toml"
+    if destination.exists() and destination.read_text(encoding="utf-8") == content:
+        return False
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(content, encoding="utf-8")
+    return True
+
+
+def apply_saved_vpn_country(values: dict[str, str]) -> bool:
+    selection_file = Path(values["CONFIG_DIR"]) / "vpn-country" / "selection.json"
+    if values.get("VPN_GATEWAY_SERVICE") != "gluetun" or not selection_file.exists():
+        return False
+    try:
+        countries = json.loads(selection_file.read_text(encoding="utf-8"))["countries"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    selected = ",".join(country for country in countries if isinstance(country, str))
+    if values.get("VPN_SERVER_COUNTRIES", "") == selected:
+        return False
+    values["VPN_SERVER_COUNTRIES"] = selected
+    return True
+
+
+def vpn_countries(servers: Sequence[Mapping[str, object]]) -> list[str]:
+    return sorted({
+        str(server["country"])
+        for server in servers
+        if server.get("vpn") == "openvpn" and server.get("country")
+    })
+
+
+def save_vpn_country_list(values: Mapping[str, str]) -> None:
+    provider_flag = "-" + values["VPN_SERVICE_PROVIDER"].replace(" ", "-")
+    result = run(
+        (
+            "docker", "exec", "gluetun", "sh", "-c",
+            f"/gluetun-entrypoint format-servers {shlex.quote(provider_flag)} "
+            "-format json -output /tmp/servers.json >/dev/null && cat /tmp/servers.json",
+        ),
+        check=False,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return
+    try:
+        countries = vpn_countries(json.loads(result.stdout))
+    except (ValueError, TypeError, AttributeError):
+        return
+    destination = Path(values["CONFIG_DIR"]) / "vpn-country" / "countries.json"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(countries), encoding="utf-8")
+
+
+def copy_homepage_config(config_dir: Path, values: Mapping[str, str]) -> bool:
     destination = config_dir / "homepage"
     destination.mkdir(parents=True, exist_ok=True)
-    for filename in ("services.yaml", "settings.yaml", "widgets.yaml"):
+    for filename in ("settings.yaml", "widgets.yaml", "docker.yaml", "bookmarks.yaml"):
         shutil.copyfile(HOMEPAGE_TEMPLATE_DIR / filename, destination / filename)
+    gateway = values["VPN_GATEWAY_SERVICE"]
+    vpn_template = "vpn-gluetun.yaml" if gateway == "gluetun" else "vpn-tailscale.yaml"
+    (destination / "services.yaml").write_text(
+        (HOMEPAGE_TEMPLATE_DIR / "services.yaml").read_text(encoding="utf-8")
+        + (HOMEPAGE_TEMPLATE_DIR / vpn_template).read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    return gateway == "gluetun" and write_gluetun_auth(config_dir, values)
 
 
 def prompt_vpn_provider() -> str:
@@ -599,42 +726,51 @@ def ensure_vpn_config(values: dict[str, str]) -> None:
         )
 
 
-def wait_for_vpn_gateway(values: Mapping[str, str], timeout: int = VPN_WAIT_SECONDS) -> None:
-    deadline = time.monotonic() + timeout
+def vpn_gateway_ready(gateway: str) -> bool:
+    if gateway == "gluetun":
+        result = run(
+            ("docker", "inspect", "gluetun", "--format", "{{.State.Health.Status}}"),
+            check=False,
+            capture_output=True,
+        )
+        return result.returncode == 0 and result.stdout.strip() == "healthy"
+    result = run(
+        ("docker", "exec", "tailscale-vpn", "tailscale", "status", "--json"),
+        check=False,
+        capture_output=True,
+    )
+    try:
+        status = json.loads(result.stdout) if result.returncode == 0 else {}
+        return status.get("ExitNodeStatus", {}).get("Online") is True
+    except (ValueError, AttributeError):
+        return False
+
+
+def wait_for_vpn_gateway(values: Mapping[str, str]) -> None:
     gateway = values["VPN_GATEWAY_SERVICE"]
-    while time.monotonic() < deadline:
-        if gateway == "gluetun":
-            result = run(
-                ("docker", "inspect", "gluetun", "--format", "{{.State.Health.Status}}"),
-                check=False,
-                capture_output=True,
-            )
-            if result.returncode == 0 and result.stdout.strip() == "healthy":
-                return
-        else:
-            result = run(
-                ("docker", "exec", "tailscale-vpn", "tailscale", "status", "--json"),
-                check=False,
-                capture_output=True,
-            )
-            if result.returncode == 0:
-                try:
-                    status = json.loads(result.stdout)
-                except json.JSONDecodeError:
-                    status = {}
-                if status.get("ExitNodeStatus", {}).get("Online") is True:
-                    return
+    if vpn_gateway_ready(gateway):
+        return
+    print("Waiting for the VPN connection. qBittorrent and Prowlarr will start when it connects.")
+    while not vpn_gateway_ready(gateway):
         time.sleep(2)
-    raise StackError(f"{gateway} did not establish the selected VPN route within three minutes.")
 
 
-def start_core_services(values: Mapping[str, str]) -> None:
+def start_core_services(values: Mapping[str, str], restart_gateway: bool = False) -> None:
     gateway = values["VPN_GATEWAY_SERVICE"]
     inactive_gateway = "tailscale-vpn" if gateway == "gluetun" else "gluetun"
-    compose("stop", "qbittorrent", inactive_gateway)
-    compose("up", "-d", gateway)
+    if gateway == "gluetun":
+        gateway_services, inactive_services = GLUETUN_ONLY_SERVICES, (inactive_gateway,)
+    else:
+        gateway_services, inactive_services = (), (inactive_gateway, *GLUETUN_ONLY_SERVICES)
+    other_services = [service for service in CORE_SERVICES if service not in VPN_SERVICES]
+    compose("stop", *VPN_SERVICES, *inactive_services)
+    compose("up", "-d", "--no-deps", gateway, *other_services, *gateway_services)
+    if restart_gateway:
+        compose("restart", gateway)
+    if gateway == "gluetun":
+        save_vpn_country_list(values)
     wait_for_vpn_gateway(values)
-    compose("up", "-d", *CORE_SERVICES)
+    compose("up", "-d", "--no-deps", *VPN_SERVICES)
 
 
 def read_setup_state(path: Path) -> set[str]:
@@ -717,7 +853,8 @@ Open this link:
 3. Under Authentication, replace the temporary login with the username and password requested after these steps.
 4. Open the Downloads section.
 5. Set Saving Management > Default Save Path to /media/Downloads.
-6. Click Apply, then OK.
+6. Set Keep incomplete torrents in to /media/Downloads/incomplete
+7. Click Save.
 """.strip()
     )
 
@@ -826,6 +963,45 @@ Open this link:
 5. Complete the remaining setup wizard pages.
 6. If some media do not appear, open Dashboard > Users > your user > Parental Control. Check the maximum allowed rating and whether items with no or unrecognized rating are blocked, then save any changes.
 7. Open Dashboard > Scheduled Tasks and run Scan Library to refresh the libraries.
+""".strip()
+    )
+
+
+def print_seerr_guide(access_host: str, values: Mapping[str, str]) -> None:
+    print(
+        f"""
+Seerr setup
+
+Open this link:
+{service_url(access_host, 5055)}
+
+1. Choose Jellyfin as the server type.
+2. Jellyfin URL: jellyfin
+3. Port: 8096
+4. Email Address: enter an email address of your choice. Seerr uses it for notifications and its own sign-in.
+5. Username: {values["JELLYFIN_ADMIN_USER"]}
+6. Password: {values["JELLYFIN_ADMIN_PASS"]}
+7. Click Sign In.
+8. Click Sync Libraries, enable the Movies and Shows libraries, then click Continue.
+9. Click Add Radarr Server and check Default Server.
+10. Server Name: Radarr
+11. Hostname or IP Address: radarr
+12. Port: 7878
+13. API Key: {values["RADARR_API_KEY"]}
+14. Click Test.
+15. Quality Profile: 4K Progressive
+16. Root Folder: /media/Movies
+17. Select a Minimum Availability, then click Add Server.
+18. Click Add Sonarr Server and check Default Server.
+19. Server Name: Sonarr
+20. Hostname or IP Address: sonarr
+21. Port: 8989
+22. API Key: {values["SONARR_API_KEY"]}
+23. Click Test.
+24. Quality Profile: 4K Progressive
+25. Root Folder: /media/Series
+26. Check Season Folders, then click Add Server.
+27. Click Finish Setup.
 """.strip()
     )
 
@@ -1028,8 +1204,10 @@ def setup() -> None:
         "VPN_SERVER_COUNTRIES": existing_values.get("VPN_SERVER_COUNTRIES", ""),
     })
     ensure_vpn_config(values)
+    ensure_gluetun_api_keys(values)
+    apply_saved_vpn_country(values)
     create_directories(media_dir, config_dir)
-    copy_homepage_config(config_dir)
+    gateway_access_changed = copy_homepage_config(config_dir, values)
     qbittorrent_was_configured = any(
         (config_dir / "qbittorrent").rglob("qBittorrent.conf")
     )
@@ -1038,7 +1216,7 @@ def setup() -> None:
     write_env(ENV_FILE, values)
 
     compose("config", "--quiet")
-    start_core_services(values)
+    start_core_services(values, gateway_access_changed)
 
     if "qbittorrent" not in completed_steps:
         if qbittorrent_was_configured:
@@ -1087,16 +1265,22 @@ def setup() -> None:
 
     if "jellyfin" not in completed_steps:
         print_jellyfin_guide(access_host)
-        ensure_credentials(values, ("JELLYFIN",))
+        ensure_credentials(values, ("JELLYFIN_ADMIN",))
         write_env(ENV_FILE, values)
         wait_for_step("Jellyfin")
         complete_setup_step(state_path, completed_steps, "jellyfin")
-    elif not values.get("JELLYFIN_USER") or not values.get("JELLYFIN_PASS"):
+    elif not values.get("JELLYFIN_ADMIN_USER") or not values.get("JELLYFIN_ADMIN_PASS"):
         print("Record the existing Jellyfin administrator username and password in the following prompts.")
-        ensure_credentials(values, ("JELLYFIN",))
+        ensure_credentials(values, ("JELLYFIN_ADMIN",))
         write_env(ENV_FILE, values)
 
     sync_recyclarr(values)
+
+    if "seerr" not in completed_steps:
+        print_seerr_guide(access_host, values)
+        wait_for_step("Seerr")
+        complete_setup_step(state_path, completed_steps, "seerr")
+
     install_autostart()
     print("\nSetup complete. Use 'python media_stack.py status' to inspect it.")
     print(f"Open Homepage:\n{service_url(access_host, 3000)}")
@@ -1104,9 +1288,13 @@ def setup() -> None:
 
 def start() -> None:
     values = read_env()
+    keys_added = ensure_gluetun_api_keys(values)
+    if apply_saved_vpn_country(values) or keys_added:
+        write_env(ENV_FILE, values)
     wait_for_docker()
-    copy_homepage_config(Path(values["CONFIG_DIR"]))
-    start_core_services(values)
+    create_directories(Path(values["MEDIA_DIR"]), Path(values["CONFIG_DIR"]))
+    gateway_access_changed = copy_homepage_config(Path(values["CONFIG_DIR"]), values)
+    start_core_services(values, gateway_access_changed)
     sync_recyclarr(values)
 
 
@@ -1125,67 +1313,90 @@ def vpn_status() -> None:
     wait_for_docker()
     gateway = values["VPN_GATEWAY_SERVICE"]
     if gateway == "gluetun":
-        result = run(
-            ("docker", "inspect", "gluetun", "--format", "{{.State.Health.Status}}"),
-            check=False,
-            capture_output=True,
-        )
-        state = "healthy" if result.returncode == 0 and result.stdout.strip() == "healthy" else "not healthy"
+        state = "healthy" if vpn_gateway_ready(gateway) else "not healthy"
         print(f"Gluetun VPN: {state}")
         if values.get("VPN_SERVER_COUNTRIES"):
             print(f"Selected countries:\n{values['VPN_SERVER_COUNTRIES']}")
     elif gateway == "tailscale-vpn":
-        result = run(
-            ("docker", "exec", "tailscale-vpn", "tailscale", "status", "--json"),
-            check=False,
-            capture_output=True,
-        )
-        try:
-            online = result.returncode == 0 and json.loads(result.stdout).get("ExitNodeStatus", {}).get("Online") is True
-        except (ValueError, AttributeError):
-            online = False
+        online = vpn_gateway_ready(gateway)
         print(f"Tailscale exit node: {'online' if online else 'not online'}")
         print(f"Selected exit node:\n{values['TAILSCALE_EXIT_NODE']}")
     else:
         raise StackError("Unknown VPN gateway.")
 
 
-def show_saved(section: str | None = None) -> None:
-    sections = {
-        "qbittorrent": (("Username", "QBIT_USER"), ("Password", "QBIT_PASS")),
-        "sonarr": (("Username", "SONARR_USER"), ("Password", "SONARR_PASS"), ("API key", "SONARR_API_KEY")),
-        "radarr": (("Username", "RADARR_USER"), ("Password", "RADARR_PASS"), ("API key", "RADARR_API_KEY")),
-        "prowlarr": (("Username", "PROWLARR_USER"), ("Password", "PROWLARR_PASS")),
-        "jellyfin": (("Username", "JELLYFIN_USER"), ("Password", "JELLYFIN_PASS")),
-        "vpn": (("Provider", "VPN_SERVICE_PROVIDER"), ("Gateway", "VPN_GATEWAY_SERVICE"),
-                ("Server countries", "VPN_SERVER_COUNTRIES"), ("Service username", "VPN_OPENVPN_USER"),
-                ("Service password", "VPN_OPENVPN_PASSWORD"), ("Exit node", "TAILSCALE_EXIT_NODE"),
-                ("Auth key", "TAILSCALE_AUTH_KEY")),
-        "access": (("Host", "ADMIN_ACCESS_HOST"), ("Media directory", "MEDIA_DIR"),
-                   ("Configuration directory", "CONFIG_DIR")),
-    }
+def prompt_new_value(label: str, kind: str) -> str | None:
+    if kind == "password":
+        while True:
+            value = masked_password(f"New {label.lower()} [Enter keeps it]: ")
+            if not value:
+                return None
+            if masked_password(f"Repeat new {label.lower()}: ") == value:
+                return value
+            print("Values do not match.")
+    while True:
+        value = input(f"New {label.lower()} [Enter keeps it]: ").strip()
+        if not value:
+            return None
+        if kind != "api_key":
+            return value
+        try:
+            return validate_api_key(value)
+        except StackError as error:
+            print(f"Error: {error}")
+
+
+def confirm_change() -> bool:
+    while True:
+        answer = input("Change these values? [y/N]: ").strip().lower()
+        if answer in {"", "n", "no"}:
+            return False
+        if answer in {"y", "yes"}:
+            return True
+        print("Enter Y or N.")
+
+
+def credentials(section: str | None = None) -> None:
     if section is None:
-        print("Choose what to show: " + ", ".join(sections))
-        print("Passwords and API keys appear only when you choose a section.")
+        print("Choose a group: " + ", ".join(CREDENTIAL_GROUPS))
+        print("Passwords and API keys appear only when you choose a group.")
         return
     if not ENV_FILE.exists():
         raise StackError("Run 'python media_stack.py setup' first.")
     values = read_env_values(ENV_FILE)
-    fields = sections[section]
+    fields = CREDENTIAL_GROUPS[section]
     if section == "vpn":
-        fields = (
-            (("Gateway", "VPN_GATEWAY_SERVICE"), ("Exit node", "TAILSCALE_EXIT_NODE"),
-             ("Auth key", "TAILSCALE_AUTH_KEY"))
-            if values.get("VPN_GATEWAY_SERVICE") == "tailscale-vpn"
-            else fields[:5]
+        tailscale_keys = {"TAILSCALE_EXIT_NODE", "TAILSCALE_AUTH_KEY"}
+        uses_tailscale = values.get("VPN_GATEWAY_SERVICE") == "tailscale-vpn"
+        fields = tuple(
+            field for field in fields
+            if field[1] == "VPN_GATEWAY_SERVICE"
+            or (field[1] in tailscale_keys) == uses_tailscale
         )
-    shown = False
-    for label, key in fields:
-        if values.get(key):
-            print(f"{label}:\n{values[key]}")
-            shown = True
-    if not shown:
+    if not any(values.get(key) for _label, key, _kind in fields):
         print(f"No saved values for {section}.")
+        return
+    for label, key, _kind in fields:
+        if values.get(key):
+            print(f"{label}: {values[key]}")
+    editable = any(kind is not None and values.get(key) for _label, key, kind in fields)
+    if not editable or not confirm_change():
+        return
+    changed = set()
+    for label, key, kind in fields:
+        if kind is None or not values.get(key):
+            continue
+        new_value = prompt_new_value(label, kind)
+        if new_value is not None and new_value != values[key]:
+            values[key] = new_value
+            changed.add(key)
+    if not changed:
+        print("No changes.")
+        return
+    write_env(ENV_FILE, values)
+    print("Saved.")
+    if changed & STACK_USED_KEYS:
+        print("The stack uses the changed values after its next start.")
 
 
 def configure_logging(log_file: str | None) -> None:
@@ -1243,17 +1454,20 @@ def parse_arguments(arguments: Sequence[str] | None = None) -> argparse.Namespac
     )
     vpn_status_parser.set_defaults(handler=vpn_status)
 
-    show_parser = commands.add_parser(
-        "show",
-        help="Show saved settings for one service.",
-        description="Show saved settings and credentials for a selected service without opening .env.",
+    credentials_parser = commands.add_parser(
+        "credentials",
+        help="List or change the saved values for one service.",
+        description=(
+            "Show the saved values for a service, vpn, or access. Answer y to type a new "
+            "value for any credential, pressing Enter to keep a value. Changes are saved to "
+            ".env only; change the password in the application itself as well."
+        ),
     )
-    show_parser.add_argument(
-        "section", nargs="?",
-        choices=("qbittorrent", "sonarr", "radarr", "prowlarr", "jellyfin", "vpn", "access"),
-        help="Choose a service, vpn, or access. Omit to list available sections.",
+    credentials_parser.add_argument(
+        "section", nargs="?", choices=tuple(CREDENTIAL_GROUPS),
+        help="Choose a service, vpn, or access. Omit to list available groups.",
     )
-    show_parser.set_defaults(handler=show_saved)
+    credentials_parser.set_defaults(handler=credentials)
 
     return parser.parse_args(arguments)
 
@@ -1262,7 +1476,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     options = parse_arguments(arguments)
     configure_logging(getattr(options, "log_file", None))
     try:
-        if options.command == "show":
+        if options.command == "credentials":
             options.handler(options.section)
         else:
             options.handler()
