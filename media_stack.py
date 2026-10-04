@@ -56,7 +56,8 @@ CREDENTIAL_GROUPS = {
                ("API key", "RADARR_API_KEY", "api_key")),
     "prowlarr": (("Username", "PROWLARR_USER", "text"), ("Password", "PROWLARR_PASS", "password")),
     "jellyfin": (("Administrator username", "JELLYFIN_ADMIN_USER", "text"),
-                 ("Administrator password", "JELLYFIN_ADMIN_PASS", "password")),
+                 ("Administrator password", "JELLYFIN_ADMIN_PASS", "password"),
+                 ("API key", "JELLYFIN_API_KEY", "api_key")),
     "vpn": (("Provider", "VPN_SERVICE_PROVIDER", None), ("Gateway", "VPN_GATEWAY_SERVICE", None),
             ("Server countries", "VPN_SERVER_COUNTRIES", None),
             ("Service username", "VPN_OPENVPN_USER", "text"),
@@ -963,6 +964,37 @@ Open this link:
 5. Complete the remaining setup wizard pages.
 6. If some media do not appear, open Dashboard > Users > your user > Parental Control. Check the maximum allowed rating and whether items with no or unrecognized rating are blocked, then save any changes.
 7. Open Dashboard > Scheduled Tasks and run Scan Library to refresh the libraries.
+8. Open Dashboard > API Keys, click New API Key, set App name to Radarr and Sonarr, then click Create.
+9. Copy the API key that Jellyfin generated automatically. A terminal prompt after these steps will ask for it.
+""".strip()
+    )
+
+
+def print_jellyfin_notifications_guide(access_host: str, api_key: str) -> None:
+    print(
+        f"""
+Jellyfin notifications
+
+Radarr link:
+{service_url(access_host, 7878)}
+
+Sonarr link:
+{service_url(access_host, 8989)}
+
+1. In Radarr, open Settings > Connect, click +, then select Emby / Jellyfin.
+2. Name: Jellyfin
+3. Check On File Import, On File Upgrade, On Rename, On Movie Delete, On Movie File Delete, and On Movie File Delete For Upgrade.
+4. Host: jellyfin
+5. Port: 8096
+6. API Key: {api_key}
+7. Keep Update Library checked, then click Test and Save.
+8. In Sonarr, open Settings > Connect, click +, then select Emby / Jellyfin.
+9. Name: Jellyfin
+10. Check On File Import, On File Upgrade, On Import Complete, On Rename, On Series Delete, On Episode File Delete, and On Episode File Delete For Upgrade.
+11. Host: jellyfin
+12. Port: 8096
+13. API Key: {api_key}
+14. Keep Update Library checked, then click Test and Save.
 """.strip()
     )
 
@@ -1268,11 +1300,23 @@ def setup() -> None:
         ensure_credentials(values, ("JELLYFIN_ADMIN",))
         write_env(ENV_FILE, values)
         wait_for_step("Jellyfin")
+        values["JELLYFIN_API_KEY"] = prompt_api_key("Jellyfin")
+        write_env(ENV_FILE, values)
         complete_setup_step(state_path, completed_steps, "jellyfin")
     elif not values.get("JELLYFIN_ADMIN_USER") or not values.get("JELLYFIN_ADMIN_PASS"):
         print("Record the existing Jellyfin administrator username and password in the following prompts.")
         ensure_credentials(values, ("JELLYFIN_ADMIN",))
         write_env(ENV_FILE, values)
+
+    if not values.get("JELLYFIN_API_KEY"):
+        print("In Jellyfin, open Dashboard > API Keys, click New API Key, set App name to Radarr and Sonarr, then click Create. The following prompt requests the generated key.")
+        values["JELLYFIN_API_KEY"] = prompt_api_key("Jellyfin")
+        write_env(ENV_FILE, values)
+
+    if "jellyfin-notifications" not in completed_steps:
+        print_jellyfin_notifications_guide(access_host, values["JELLYFIN_API_KEY"])
+        wait_for_step("Jellyfin notification")
+        complete_setup_step(state_path, completed_steps, "jellyfin-notifications")
 
     sync_recyclarr(values)
 

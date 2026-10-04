@@ -115,9 +115,10 @@ The script performs these checks and actions:
 8. Requests each permanent administration login only when its application is ready to configure.
 9. Stores the chosen local administration credentials in `.env` and saves progress after each manual step.
 10. Requests the Sonarr and Radarr API keys.
-11. Applies the Recyclarr profiles.
-12. Shows the Seerr connection steps with the saved Jellyfin login and the Sonarr and Radarr API keys.
-13. Installs automatic startup.
+11. Requests the Jellyfin API key and shows the steps that make Radarr and Sonarr refresh Jellyfin after each import.
+12. Applies the Recyclarr profiles.
+13. Shows the Seerr connection steps with the saved Jellyfin login and the Sonarr and Radarr API keys.
+14. Installs automatic startup.
 
 Setup reuses values already present in `.env`, including credentials and API keys. Existing application configuration under `config/` remains available.
 
@@ -145,7 +146,8 @@ The CLI stores the chosen username and password as `QBIT_USER` and `QBIT_PASS` i
 2. Under `Authentication`, replace the temporary username and password with the username and password chosen in the CLI.
 3. Open the `Downloads` section.
 4. Set `Saving Management > Default Save Path` to `/media/Downloads`.
-5. Click `Apply`, then `OK`.
+5. Set `Keep incomplete torrents in` to `/media/Downloads/incomplete`.
+6. Click `Save`.
 
 ### Sonarr
 
@@ -233,6 +235,36 @@ http://localhost:8096
 4. Add a Movies library using `/media/Movies`.
 5. Add a Shows library using `/media/Series`.
 6. Complete the remaining setup wizard pages.
+7. Open `Dashboard > API Keys`, click `New API Key`, set `App name` to `Radarr and Sonarr`, then click `Create`.
+8. Copy the generated key; setup saves it as `JELLYFIN_API_KEY`.
+
+### Jellyfin notifications
+
+On Windows, Docker does not pass file-change notices from a Windows drive into containers, so Jellyfin's real-time monitoring does not see new files. Radarr and Sonarr refresh Jellyfin after each import instead:
+
+1. In Radarr, open `Settings > Connect`, click `+`, then select `Emby / Jellyfin`.
+2. Set `Name` to `Jellyfin`.
+3. Check `On File Import`, `On File Upgrade`, `On Rename`, `On Movie Delete`, `On Movie File Delete`, and `On Movie File Delete For Upgrade`.
+4. Set `Host` to `jellyfin`, `Port` to `8096`, and `API Key` to the Jellyfin API key.
+5. Keep `Update Library` checked, then click `Test` and `Save`.
+6. Repeat in Sonarr, checking `On File Import`, `On File Upgrade`, `On Import Complete`, `On Rename`, `On Series Delete`, `On Episode File Delete`, and `On Episode File Delete For Upgrade`.
+
+Files added to the media folders by hand still appear only after Jellyfin's scheduled library scan, which runs every 12 hours by default.
+
+### Seerr
+
+Open:
+
+```text
+http://localhost:5055
+```
+
+1. Choose Jellyfin as the server type, with `jellyfin` as the Jellyfin URL and `8096` as the port.
+2. Enter an email address of your choice and the Jellyfin administrator username and password, then click `Sign In`.
+3. Click `Sync Libraries`, enable the Movies and Shows libraries, then click `Continue`.
+4. Add a Radarr server marked `Default Server`: host `radarr`, port `7878`, the Radarr API key, quality profile `4K Progressive`, root folder `/media/Movies`.
+5. Add a Sonarr server marked `Default Server`: host `sonarr`, port `8989`, the Sonarr API key, quality profile `4K Progressive`, root folder `/media/Series`, with `Season Folders` checked.
+6. Click `Finish Setup`.
 
 ## Recyclarr profiles
 

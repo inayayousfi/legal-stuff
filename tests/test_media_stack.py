@@ -303,6 +303,24 @@ class SetupGuideTests(unittest.TestCase):
         self.assertNotIn("JELLYFIN_", output)
         self.assertNotIn("_API_KEY", output)
 
+    def test_jellyfin_notifications_guide_prints_key_hosts_and_triggers(self):
+        output = self.guide_output(
+            media_stack.print_jellyfin_notifications_guide, "media.example.ts.net", "c" * 32
+        )
+        self.assertIn("http://media.example.ts.net:7878\n", output)
+        self.assertIn("http://media.example.ts.net:8989\n", output)
+        self.assertEqual(output.count(f"API Key: {'c' * 32}\n"), 2)
+        self.assertEqual(output.count("Host: jellyfin\n"), 2)
+        self.assertEqual(output.count("select Emby / Jellyfin."), 2)
+        self.assertIn("On Movie File Delete For Upgrade", output)
+        self.assertIn("On Import Complete", output)
+        self.assertNotIn("JELLYFIN_API_KEY", output)
+
+    def test_jellyfin_guide_asks_for_generated_api_key(self):
+        output = self.guide_output(media_stack.print_jellyfin_guide, "localhost")
+        self.assertIn("click New API Key, set App name to Radarr and Sonarr, then click Create.", output)
+        self.assertIn("Jellyfin generated automatically. A terminal prompt after these steps will ask for it.", output)
+
     def test_qbittorrent_guide_contains_login_and_ui_path(self):
         output = self.guide_output(media_stack.print_qbittorrent_guide, "Temporary123")
         self.assertIn("http://localhost:8080", output)
@@ -523,7 +541,7 @@ class JellyfinSetupTests(unittest.TestCase):
                 "SONARR_API_KEY": "a" * 32,
                 "RADARR_API_KEY": "b" * 32,
             }
-            completed = {"qbittorrent", "sonarr", "radarr", "prowlarr", "seerr"}
+            completed = {"qbittorrent", "sonarr", "radarr", "prowlarr", "seerr", "jellyfin-notifications"}
 
             def check_saved(service):
                 self.assertEqual(service, "Jellyfin")
@@ -543,14 +561,64 @@ class JellyfinSetupTests(unittest.TestCase):
                  patch("media_stack.prompt_username", return_value="admin"), \
                  patch("media_stack.prompt_password", return_value="secret"), \
                  patch("media_stack.wait_for_step", side_effect=check_saved), \
+                 patch("media_stack.prompt_api_key", return_value="d" * 32), \
                  patch("media_stack.complete_setup_step"), \
                  patch("media_stack.sync_recyclarr"), \
                  patch("media_stack.install_autostart"), \
                  contextlib.redirect_stdout(output := io.StringIO()):
                 media_stack.setup()
             self.assertIn('JELLYFIN_ADMIN_USER="admin"', env_path.read_text())
+            self.assertIn(f'JELLYFIN_API_KEY="{"d" * 32}"', env_path.read_text())
             self.assertIn("Open Homepage:\nhttp://media.example.ts.net:3000\n", output.getvalue())
             self.assertEqual(output.getvalue().count("http://media.example.ts.net:3000"), 1)
+
+    def test_jellyfin_key_is_saved_before_notifications_guide_uses_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env_path = Path(directory) / ".env"
+            events = []
+            existing = {
+                "MEDIA_DIR": directory,
+                "QBT_LEGAL_NOTICE": "confirm",
+                "ADMIN_ACCESS_HOST": "media.example.ts.net",
+                "SONARR_API_KEY": "a" * 32,
+                "RADARR_API_KEY": "b" * 32,
+                "JELLYFIN_ADMIN_USER": "jelly",
+                "JELLYFIN_ADMIN_PASS": "jelly-secret",
+            }
+            completed = {"qbittorrent", "sonarr", "radarr", "prowlarr", "seerr"}
+
+            def prompt_key(service):
+                events.append(f"key:{service}")
+                return "d" * 32
+
+            def notifications_guide(_host, key):
+                self.assertIn(f'JELLYFIN_API_KEY="{key}"', env_path.read_text())
+                events.append("notifications")
+
+            with patch.object(media_stack, "ENV_FILE", env_path), \
+                 patch("media_stack.read_env_values", return_value=existing), \
+                 patch("media_stack.restore_windows_console_input"), \
+                 patch("media_stack.wait_for_docker"), \
+                 patch("media_stack.user_ids", return_value=("1000", "1000")), \
+                 patch("media_stack.ensure_vpn_config"), \
+                 patch("media_stack.create_directories"), \
+                 patch("media_stack.copy_homepage_config"), \
+                 patch("media_stack.read_setup_state", return_value=completed), \
+                 patch("media_stack.compose"), \
+                 patch("media_stack.start_core_services"), \
+                 patch("media_stack.print_jellyfin_guide"), \
+                 patch("media_stack.prompt_api_key", side_effect=prompt_key), \
+                 patch("media_stack.print_jellyfin_notifications_guide", side_effect=notifications_guide), \
+                 patch("media_stack.wait_for_step", side_effect=events.append), \
+                 patch("media_stack.complete_setup_step", side_effect=lambda _path, _steps, step: events.append(f"done:{step}")), \
+                 patch("media_stack.sync_recyclarr"), \
+                 patch("media_stack.install_autostart"), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                media_stack.setup()
+            self.assertEqual(events, [
+                "Jellyfin", "key:Jellyfin", "done:jellyfin",
+                "notifications", "Jellyfin notification", "done:jellyfin-notifications",
+            ])
 
     def test_seerr_guide_follows_recyclarr_sync(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -564,7 +632,8 @@ class JellyfinSetupTests(unittest.TestCase):
                 "JELLYFIN_ADMIN_USER": "jelly",
                 "JELLYFIN_ADMIN_PASS": "jelly-secret",
             }
-            completed = {"qbittorrent", "sonarr", "radarr", "prowlarr", "jellyfin"}
+            existing["JELLYFIN_API_KEY"] = "c" * 32
+            completed = {"qbittorrent", "sonarr", "radarr", "prowlarr", "jellyfin", "jellyfin-notifications"}
             with patch.object(media_stack, "ENV_FILE", Path(directory) / ".env"), \
                  patch("media_stack.read_env_values", return_value=existing), \
                  patch("media_stack.restore_windows_console_input"), \
