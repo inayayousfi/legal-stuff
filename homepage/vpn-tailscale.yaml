@@ -1,5 +1,0 @@
-    - Tailscale:
-        icon: tailscale.png
-        description: qBittorrent and Prowlarr VPN connection
-        server: media-stack
-        container: tailscale-vpn
