@@ -1,7 +1,9 @@
 .env
 config/
-__pycache__/
-*.py[cod]
+compose.yaml
+compose/
+/selfhost
+/selfhost.exe
 *.log
 .idea/
 .vscode/

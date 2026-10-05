@@ -81,15 +81,14 @@ Every container uses the following paths:
 /media/Series
 ```
 
-Application state is stored in the repository's local `config/` directory. The directory is excluded from Git.
+Application state is stored in the `config/` directory next to the program.
 
 ## Requirements
 
 Install these tools before running the setup:
 
-- Docker Engine with Docker Compose on Linux
+- Docker Engine with Docker Compose 2.20 or newer on Linux
 - Docker Desktop using Linux containers on Windows
-- Python 3.10 or newer
 
 Docker must be running before setup begins.
 
@@ -97,29 +96,41 @@ On Windows, Docker Desktop must have access to the selected media drive.
 
 ## Download
 
-Download the repository ZIP:
+Download the program for your computer from the latest release:
 
-https://github.com/inayayousfi/legal-stuff/archive/refs/heads/mommy.zip
+https://github.com/inayayousfi/legal-stuff/releases/latest
 
-Extract the archive to its permanent location. The automatic startup configuration uses that absolute path, so moving the directory later will break startup.
+| Computer | File | Save it as |
+| --- | --- | --- |
+| Windows | `selfhost-windows-amd64.exe` | `selfhost.exe` |
+| Linux on Intel or AMD | `selfhost-linux-amd64` | `selfhost` |
+| Linux on ARM, such as a Raspberry Pi | `selfhost-linux-arm64` | `selfhost` |
+
+Save it in an empty folder at its permanent location. The program keeps `.env`, `config/`, and the generated Docker Compose files in its own folder, and automatic startup uses that absolute path, so moving the folder later will break startup.
+
+On Linux, allow the program to run:
+
+```bash
+chmod +x selfhost
+```
 
 ## First setup
 
-Open a terminal inside the extracted directory.
+Open a terminal inside that folder.
 
 On Windows:
 
 ```powershell
-py media_stack.py setup
+.\selfhost.exe setup
 ```
 
 On Linux:
 
 ```bash
-python3 media_stack.py setup
+./selfhost setup
 ```
 
-The script performs these checks and actions:
+The program performs these checks and actions:
 
 1. Verifies that Docker and Docker Compose are available.
 2. Asks for the media directory.
@@ -138,6 +149,8 @@ The script performs these checks and actions:
 15. Shows the Seerr connection steps with the saved Jellyfin login and the Sonarr and Radarr API keys.
 16. Installs automatic startup.
 
+Run the program without a command to open a full-screen interface instead. It offers the same actions as the commands below, with the same guides and questions.
+
 Setup reuses values already present in `.env`, including credentials and API keys. Existing application configuration under `config/` remains available.
 
 An interrupted setup keeps `.env` and completed-step checkpoints in `config/setup-state.json`. Run the same setup command again to continue. Docker Compose operations and automatic-start installation are safe to repeat.
@@ -146,7 +159,7 @@ Leading and trailing spaces are removed from the media-directory input. Password
 
 ## Manual application setup
 
-The Python script prints these instructions during setup.
+The program prints these instructions during setup.
 
 The first administration page asks for the admin sign-in. One sign-in covers every administration page for 24 hours.
 
@@ -307,54 +320,54 @@ Anime uses the same progressive profiles.
 
 The stack expects subtitles to be embedded in the media files. It does not install Bazarr or download missing subtitles.
 
-Recyclarr runs after setup and after every `media_stack.py start`. Running `docker compose up -d` directly skips that synchronization.
+Recyclarr runs after setup and after every `selfhost start`. Running `docker compose up -d` directly skips that synchronization.
 
 ## Daily commands
 
 Show every command with a short description:
 
 ```bash
-python3 media_stack.py help
+./selfhost help
 ```
 
 `-h` prints the same general help. Add `-h` after any command for its detailed help:
 
 ```bash
-python3 media_stack.py setup -h
-python3 media_stack.py start -h
-python3 media_stack.py stop -h
-python3 media_stack.py status -h
-python3 media_stack.py vpn-status -h
-python3 media_stack.py credentials -h
+./selfhost setup -h
+./selfhost start -h
+./selfhost stop -h
+./selfhost status -h
+./selfhost vpn-status -h
+./selfhost credentials -h
 ```
 
 Start the stack and synchronize Recyclarr:
 
 ```bash
-python3 media_stack.py start
+./selfhost start
 ```
 
-On Windows, replace `python3` with `py`.
+On Windows, replace `./selfhost` with `.\selfhost.exe`.
 
 Show container status:
 
 ```bash
-python3 media_stack.py status
+./selfhost status
 ```
 
 Check the selected VPN gateway (Gluetun health or Tailscale exit-node availability):
 
 ```bash
-python3 media_stack.py vpn-status
+./selfhost vpn-status
 ```
 
 List saved groups, or display one group (including any saved password or API key) and change its credentials:
 
 ```bash
-python3 media_stack.py credentials
-python3 media_stack.py credentials admin
-python3 media_stack.py credentials jellyfin
-python3 media_stack.py credentials vpn
+./selfhost credentials
+./selfhost credentials admin
+./selfhost credentials jellyfin
+./selfhost credentials vpn
 ```
 
 After the values are shown, answer `y` to replace credentials one by one; press Enter to keep a saved value. Answer `n` or press Enter to leave everything unchanged. For Jellyfin and the VPN, this updates `.env` only, so change the password in the application as well. The admin username and password, VPN credentials, and the Sonarr and Radarr API keys take effect at the next `start`; the admin sign-in needs no other change. The Jellyfin values belong to the administrator account, which can create other Jellyfin users and reset their passwords in Jellyfin's Dashboard. The values appear in the terminal, so use this on a private screen.
@@ -362,7 +375,7 @@ After the values are shown, answer `y` to replace credentials one by one; press 
 Stop the stack:
 
 ```bash
-python3 media_stack.py stop
+./selfhost stop
 ```
 
 ## Automatic startup
@@ -433,13 +446,12 @@ Remove the launcher from:
 
 ## Updating
 
-Container images are pinned by multi-platform digest. A new installation therefore uses the same image builds until `compose.yaml` is updated.
+Container images are pinned by multi-platform digest in each application's Compose file under `internal/apps/`. The program carries those files and writes them to `compose.yaml` and `compose/` in its folder on every command, so edits to the written copies are overwritten. A new installation therefore uses the same image builds until a release with updated digests replaces the program.
 
-After updating the digests, pull and restart the stack:
+After replacing the program with a newer release, restart the stack. Docker downloads every image whose pinned digest changed:
 
 ```bash
-docker compose pull
-python3 media_stack.py start
+./selfhost start
 ```
 
 Application data remains under `config/`.
@@ -456,7 +468,7 @@ Media/
 
 The `.env` file contains the admin sign-in, the Jellyfin administrator login, the VPN credentials, and the Sonarr, Radarr, and Jellyfin API keys. The stack uses the admin sign-in and the VPN credentials directly; the Jellyfin login is a local reference. Do not commit or share this file.
 
-The `recyclarr/recyclarr.yml` file contains no secrets and remains tracked by Git.
+The Recyclarr configuration, `internal/apps/recyclarr/recyclarr.yml`, contains no secrets and is part of the program.
 
 ## Previous stack
 
