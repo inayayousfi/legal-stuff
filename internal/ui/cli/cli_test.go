@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/inayayousfi/legal-stuff/internal/flow"
+	"github.com/inayayousfi/selfnook/internal/flow"
 )
 
 func run(t *testing.T, input string, screen flow.Screen) (flow.Answers, string, error) {

@@ -10,7 +10,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/inayayousfi/legal-stuff/internal/shell"
+	"github.com/inayayousfi/selfnook/internal/shell"
 )
 
 // tailscaleServeConflict explains why Tailscale Serve blocks the stack.

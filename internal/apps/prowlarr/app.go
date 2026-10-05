@@ -4,12 +4,12 @@ package prowlarr
 import (
 	"embed"
 
-	"github.com/inayayousfi/legal-stuff/internal/app"
-	"github.com/inayayousfi/legal-stuff/internal/apps/caddy"
-	"github.com/inayayousfi/legal-stuff/internal/apps/radarr"
-	"github.com/inayayousfi/legal-stuff/internal/apps/sonarr"
-	"github.com/inayayousfi/legal-stuff/internal/apps/vpn"
-	"github.com/inayayousfi/legal-stuff/internal/flow"
+	"github.com/inayayousfi/selfnook/internal/app"
+	"github.com/inayayousfi/selfnook/internal/apps/caddy"
+	"github.com/inayayousfi/selfnook/internal/apps/radarr"
+	"github.com/inayayousfi/selfnook/internal/apps/sonarr"
+	"github.com/inayayousfi/selfnook/internal/apps/vpn"
+	"github.com/inayayousfi/selfnook/internal/flow"
 )
 
 //go:embed compose.yaml
@@ -37,8 +37,8 @@ var App = &app.App{
 	Tiles: func(app.Values) []app.Tile {
 		return []app.Tile{{Group: "Admin", Position: 4, YAML: `    - Prowlarr:
         icon: prowlarr.png
-        server: media-stack
-        container: prowlarr
+        server: selfnook
+        container: selfnook-prowlarr
         href: "{{HOMEPAGE_VAR_URL}}/prowlarr"
         description: Manage indexers
 `}}

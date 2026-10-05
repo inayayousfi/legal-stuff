@@ -1,4 +1,4 @@
-module github.com/inayayousfi/legal-stuff
+module github.com/inayayousfi/selfnook
 
 go 1.27.1
 

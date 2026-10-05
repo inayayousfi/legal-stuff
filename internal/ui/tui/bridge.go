@@ -6,7 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/inayayousfi/legal-stuff/internal/flow"
+	"github.com/inayayousfi/selfnook/internal/flow"
 )
 
 // bridge is the flow.UI handed to a running command. The command runs in its

@@ -8,11 +8,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/inayayousfi/legal-stuff/internal/app"
-	"github.com/inayayousfi/legal-stuff/internal/autostart"
-	"github.com/inayayousfi/legal-stuff/internal/flow"
-	"github.com/inayayousfi/legal-stuff/internal/settings"
-	"github.com/inayayousfi/legal-stuff/internal/shell"
+	"github.com/inayayousfi/selfnook/internal/app"
+	"github.com/inayayousfi/selfnook/internal/autostart"
+	"github.com/inayayousfi/selfnook/internal/flow"
+	"github.com/inayayousfi/selfnook/internal/settings"
+	"github.com/inayayousfi/selfnook/internal/shell"
 )
 
 // Setup asks every question, starts the stack, guides through each app's
@@ -76,6 +76,9 @@ func (s *Stack) Setup() error {
 		return err
 	}
 	if err := shell.Compose(s.Shell, "config", "--quiet"); err != nil {
+		return err
+	}
+	if err := s.removeRetiredProject(); err != nil {
 		return err
 	}
 	if err := s.recreateNetworkIfNeeded(); err != nil {

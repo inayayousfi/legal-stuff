@@ -7,11 +7,11 @@ import (
 	"errors"
 	"time"
 
-	"github.com/inayayousfi/legal-stuff/internal/app"
-	"github.com/inayayousfi/legal-stuff/internal/apps/radarr"
-	"github.com/inayayousfi/legal-stuff/internal/apps/sonarr"
-	"github.com/inayayousfi/legal-stuff/internal/files"
-	"github.com/inayayousfi/legal-stuff/internal/shell"
+	"github.com/inayayousfi/selfnook/internal/app"
+	"github.com/inayayousfi/selfnook/internal/apps/radarr"
+	"github.com/inayayousfi/selfnook/internal/apps/sonarr"
+	"github.com/inayayousfi/selfnook/internal/files"
+	"github.com/inayayousfi/selfnook/internal/shell"
 )
 
 //go:embed compose.yaml

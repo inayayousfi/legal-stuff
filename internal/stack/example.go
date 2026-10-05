@@ -3,7 +3,7 @@ package stack
 import (
 	"strings"
 
-	"github.com/inayayousfi/legal-stuff/internal/app"
+	"github.com/inayayousfi/selfnook/internal/app"
 )
 
 // ExampleEnv is the .env.example file: every setting setup writes, with example values.

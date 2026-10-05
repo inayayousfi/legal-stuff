@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/inayayousfi/legal-stuff/internal/app"
-	"github.com/inayayousfi/legal-stuff/internal/fake"
-	"github.com/inayayousfi/legal-stuff/internal/settings"
+	"github.com/inayayousfi/selfnook/internal/app"
+	"github.com/inayayousfi/selfnook/internal/fake"
+	"github.com/inayayousfi/selfnook/internal/settings"
 )
 
 func TestBaseURLKeepsOtherNetworkSettings(t *testing.T) {

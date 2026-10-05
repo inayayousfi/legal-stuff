@@ -1,7 +1,7 @@
 services:
   gluetun:
     image: qmcgaw/gluetun:latest@sha256:12df8b20528d4cd5e9b6e827d40f2886cf78e53e7e9afc750050648c31183793
-    container_name: gluetun
+    container_name: selfnook-gluetun
     restart: unless-stopped
     cap_add:
       - NET_ADMIN
@@ -28,8 +28,8 @@ services:
 
   tailscale-vpn:
     image: tailscale/tailscale:latest@sha256:2667499ed87ae29218f292556ba062918402dd5e92e93637af14867e4df12dd3
-    container_name: tailscale-vpn
-    hostname: media-stack-qbittorrent
+    container_name: selfnook-tailscale-vpn
+    hostname: selfnook-qbittorrent
     restart: unless-stopped
     cap_add:
       - NET_ADMIN
@@ -54,9 +54,9 @@ services:
 
   vpn-country:
     build: ./compose/vpn/countrypage
-    image: media-stack/vpn-country
+    image: selfnook/vpn-country
     pull_policy: build
-    container_name: vpn-country
+    container_name: selfnook-vpn-country
     user: "${PUID}:${PGID}"
     restart: unless-stopped
     environment:

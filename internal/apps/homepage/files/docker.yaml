@@ -1,4 +1,4 @@
 ---
-media-stack:
+selfnook:
   host: dockerproxy
   port: 2375

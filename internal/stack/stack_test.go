@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inayayousfi/legal-stuff/internal/apps"
-	"github.com/inayayousfi/legal-stuff/internal/apps/vpn"
-	"github.com/inayayousfi/legal-stuff/internal/fake"
-	"github.com/inayayousfi/legal-stuff/internal/flow"
-	"github.com/inayayousfi/legal-stuff/internal/settings"
-	"github.com/inayayousfi/legal-stuff/internal/shell"
+	"github.com/inayayousfi/selfnook/internal/apps"
+	"github.com/inayayousfi/selfnook/internal/apps/vpn"
+	"github.com/inayayousfi/selfnook/internal/fake"
+	"github.com/inayayousfi/selfnook/internal/flow"
+	"github.com/inayayousfi/selfnook/internal/settings"
+	"github.com/inayayousfi/selfnook/internal/shell"
 )
 
 const (
@@ -30,14 +30,16 @@ func dockerHost(subnet string) func([]string) shell.Result {
 	return func(args []string) shell.Result {
 		line := strings.Join(args, " ")
 		switch {
-		case strings.HasPrefix(line, "docker network inspect"):
+		case strings.HasPrefix(line, "docker network inspect selfnook "):
 			if subnet == "" {
 				return shell.Result{Code: 1}
 			}
 			return shell.Result{Stdout: subnet + " \n"}
-		case strings.HasPrefix(line, "docker inspect gluetun"):
+		case strings.HasPrefix(line, "docker network inspect media-stack"):
+			return shell.Result{Code: 1}
+		case strings.HasPrefix(line, "docker inspect selfnook-gluetun"):
 			return shell.Result{Stdout: "healthy\n"}
-		case strings.HasPrefix(line, "docker exec gluetun"):
+		case strings.HasPrefix(line, "docker exec selfnook-gluetun"):
 			return shell.Result{Stdout: `[{"vpn":"openvpn","country":"Spain"},{"vpn":"wireguard","country":"Chile"}]`}
 		}
 		return shell.Result{}
@@ -55,7 +57,7 @@ func newTestStack(t *testing.T, ui flow.UI, sh *fake.Shell) *Stack {
 	t.Setenv("PATH", bin)
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("USER", "tester")
-	return &Stack{Root: t.TempDir(), Apps: apps.All, Shell: sh, UI: ui, Program: "/opt/selfhost/selfhost", Sleep: func(time.Duration) {}}
+	return &Stack{Root: t.TempDir(), Apps: apps.All, Shell: sh, UI: ui, Program: "/opt/selfnook/selfnook", Sleep: func(time.Duration) {}}
 }
 
 func setupAnswers(media string) map[string]string {
@@ -165,8 +167,8 @@ func TestSetupGuidesEveryAppInOrderAndSavesValues(t *testing.T) {
 		t.Errorf("Recyclarr sync (command %d) must run before the Seerr guide (after command %d)", syncAt, commandsAtSeerr)
 	}
 
-	unit, err := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".config", "systemd", "user", "media-stack.service"))
-	if err != nil || !strings.Contains(string(unit), "ExecStart=/opt/selfhost/selfhost start --log-file ") {
+	unit, err := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".config", "systemd", "user", "selfnook.service"))
+	if err != nil || !strings.Contains(string(unit), "ExecStart=/opt/selfnook/selfnook start --log-file ") {
 		t.Errorf("user service not installed for the program: %v\n%s", err, unit)
 	}
 	if last := ui.Events[len(ui.Events)-1]; !strings.Contains(last, "Setup complete.") || !strings.Contains(last, "https://media.example.com") {
@@ -239,7 +241,7 @@ func TestStartWaitsForTheGatewayBeforeVPNServices(t *testing.T) {
 	}
 	stop := sh.Index("docker compose stop qbittorrent prowlarr tailscale-vpn")
 	up := sh.Index("docker compose up -d --no-deps --remove-orphans")
-	ready := sh.Index("docker inspect gluetun")
+	ready := sh.Index("docker inspect selfnook-gluetun")
 	vpnUp := sh.Index("docker compose up -d --no-deps qbittorrent prowlarr")
 	sync := sh.Index("docker compose run --rm recyclarr sync")
 	if !(stop >= 0 && stop < up && up < ready && ready < vpnUp && vpnUp < sync) {
@@ -270,6 +272,56 @@ func TestStartRecreatesANetworkWithAnotherAddressRange(t *testing.T) {
 	}
 }
 
+// An install made under the earlier project name is removed before the
+// stack starts, because its containers hold the same ports and address range.
+func TestStartRemovesTheEarlierProject(t *testing.T) {
+	s, sh, _ := startedStack(t, "172.31.250.0/24")
+	host := sh.Respond
+	sh.Respond = func(args []string) shell.Result {
+		if strings.Join(args, " ") == "docker ps --all --quiet --filter label=com.docker.compose.project=media-stack" {
+			return shell.Result{Stdout: "0123abcd\n"}
+		}
+		return host(args)
+	}
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	down := sh.Index("docker compose --project-name media-stack down --remove-orphans")
+	image := sh.Index("docker image rm media-stack/vpn-country")
+	up := sh.Index("docker compose up -d --no-deps --remove-orphans")
+	if !(down >= 0 && down < image && image < up) {
+		t.Errorf("order down=%d image=%d up=%d\n%s", down, image, up, strings.Join(sh.Lines(), "\n"))
+	}
+}
+
+// Setup replaces the service that earlier versions installed, so the earlier
+// program no longer runs at login.
+func TestSetupReplacesTheEarlierUserService(t *testing.T) {
+	sh := &fake.Shell{Respond: dockerHost("")}
+	ui := &fake.UI{}
+	s := newTestStack(t, ui, sh)
+	ui.Answers = setupAnswers(filepath.Join(t.TempDir(), "Media"))
+	units := filepath.Join(os.Getenv("HOME"), ".config", "systemd", "user")
+	if err := os.MkdirAll(units, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(units, "media-stack.service"), []byte("[Unit]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Setup(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(units, "media-stack.service")); err == nil {
+		t.Error("media-stack.service kept")
+	}
+	if _, err := os.Stat(filepath.Join(units, "selfnook.service")); err != nil {
+		t.Error("selfnook.service not installed")
+	}
+	if sh.Index("systemctl --user disable media-stack.service") < 0 {
+		t.Errorf("earlier service not disabled:\n%s", strings.Join(sh.Lines(), "\n"))
+	}
+}
+
 // When the Gluetun access file changes, Gluetun restarts before the VPN users start.
 func TestChangedGatewayAccessRestartsGluetunBeforeVPNServices(t *testing.T) {
 	s, sh, _ := startedStack(t, "172.31.250.0/24")
@@ -292,7 +344,7 @@ func TestChangedGatewayAccessRestartsGluetunBeforeVPNServices(t *testing.T) {
 
 func TestStartWithoutSetupAsksForSetup(t *testing.T) {
 	s := newTestStack(t, &fake.UI{}, &fake.Shell{})
-	if err := s.Start(); err == nil || err.Error() != "Run 'selfhost setup' first." {
+	if err := s.Start(); err == nil || err.Error() != "Run 'selfnook setup' first." {
 		t.Errorf("err = %v", err)
 	}
 }

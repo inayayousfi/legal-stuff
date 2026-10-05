@@ -9,17 +9,23 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/inayayousfi/legal-stuff/internal/flow"
-	"github.com/inayayousfi/legal-stuff/internal/shell"
+	"github.com/inayayousfi/selfnook/internal/flow"
+	"github.com/inayayousfi/selfnook/internal/shell"
 )
 
-const unitName = "media-stack.service"
+const (
+	unitName     = "selfnook.service"
+	launcherName = "selfnook.vbs"
+	// The names earlier versions installed, removed when the new ones are installed.
+	retiredUnitName     = "media-stack.service"
+	retiredLauncherName = "media-stack.vbs"
+)
 
 // SystemdUnit returns a unit that starts the stack with program. A non-empty
 // user makes it a system unit that runs as that user after Docker.
 func SystemdUnit(program, root, user string) string {
 	var unit strings.Builder
-	unit.WriteString("[Unit]\nDescription=Media stack\n")
+	unit.WriteString("[Unit]\nDescription=Selfnook\n")
 	if user != "" {
 		unit.WriteString("Requires=docker.service\nAfter=docker.service network-online.target\n")
 	}
@@ -88,11 +94,14 @@ func installLinuxAutostart(s shell.Shell, ui flow.UI, program, root string) erro
 	if err != nil {
 		return err
 	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	if err := removeRetiredUnits(s, home); err != nil {
+		return err
+	}
 	if answers["kind"] == userService {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return err
-		}
 		unitPath := filepath.Join(home, ".config", "systemd", "user", unitName)
 		if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
 			return err
@@ -116,7 +125,7 @@ func installLinuxAutostart(s shell.Shell, ui flow.UI, program, root string) erro
 	if user == "" {
 		return errors.New("Cannot determine the current Linux user.")
 	}
-	temporary, err := os.CreateTemp("", "media-stack-*.service")
+	temporary, err := os.CreateTemp("", "selfnook-*.service")
 	if err != nil {
 		return err
 	}
@@ -147,11 +156,45 @@ func installWindowsAutostart(ui flow.UI, program, root string) error {
 	if err := os.MkdirAll(startup, 0o755); err != nil {
 		return err
 	}
-	launcher := filepath.Join(startup, "media-stack.vbs")
+	if err := os.Remove(filepath.Join(startup, retiredLauncherName)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	launcher := filepath.Join(startup, launcherName)
 	content := WindowsLauncher(program, filepath.Join(root, "config", "startup.log"))
 	if err := os.WriteFile(launcher, []byte(content), 0o644); err != nil {
 		return err
 	}
 	ui.Say("Installed " + launcher)
+	return nil
+}
+
+// removeRetiredUnits disables and deletes the services earlier versions
+// installed. It does not stop them: their stop command runs the earlier
+// program, which would rewrite this stack's Compose files.
+func removeRetiredUnits(s shell.Shell, home string) error {
+	userUnit := filepath.Join(home, ".config", "systemd", "user", retiredUnitName)
+	if _, err := os.Stat(userUnit); err == nil {
+		if _, err := s.Run(shell.Cmd{Args: []string{"systemctl", "--user", "disable", retiredUnitName}, Check: true}); err != nil {
+			return err
+		}
+		if err := os.Remove(userUnit); err != nil {
+			return err
+		}
+		if _, err := s.Run(shell.Cmd{Args: []string{"systemctl", "--user", "daemon-reload"}, Check: true}); err != nil {
+			return err
+		}
+	}
+	systemUnit := "/etc/systemd/system/" + retiredUnitName
+	if _, err := os.Stat(systemUnit); err == nil {
+		for _, args := range [][]string{
+			{"sudo", "systemctl", "disable", retiredUnitName},
+			{"sudo", "rm", systemUnit},
+			{"sudo", "systemctl", "daemon-reload"},
+		} {
+			if _, err := s.Run(shell.Cmd{Args: args, Terminal: true, Check: true}); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }

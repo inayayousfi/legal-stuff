@@ -9,9 +9,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/inayayousfi/legal-stuff/internal/app"
-	"github.com/inayayousfi/legal-stuff/internal/files"
-	"github.com/inayayousfi/legal-stuff/internal/flow"
+	"github.com/inayayousfi/selfnook/internal/app"
+	"github.com/inayayousfi/selfnook/internal/files"
+	"github.com/inayayousfi/selfnook/internal/flow"
 )
 
 //go:embed compose.yaml

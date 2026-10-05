@@ -1,7 +1,7 @@
 services:
   authentik-db:
     image: docker.io/library/postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
-    container_name: authentik-db
+    container_name: selfnook-authentik-db
     restart: unless-stopped
     environment:
       POSTGRES_DB: authentik
@@ -18,7 +18,7 @@ services:
 
   authentik-server:
     image: ghcr.io/goauthentik/server:2026.8.3@sha256:ab9b4e8cc4ab3f8d1198d2db6aeea66bafea1963b3f2843589e0d163f97d9849
-    container_name: authentik-server
+    container_name: selfnook-authentik-server
     command: server
     user: "${PUID}:${PGID}"
     restart: unless-stopped
@@ -43,7 +43,7 @@ services:
 
   authentik-worker:
     image: ghcr.io/goauthentik/server:2026.8.3@sha256:ab9b4e8cc4ab3f8d1198d2db6aeea66bafea1963b3f2843589e0d163f97d9849
-    container_name: authentik-worker
+    container_name: selfnook-authentik-worker
     command: worker
     user: "${PUID}:${PGID}"
     restart: unless-stopped

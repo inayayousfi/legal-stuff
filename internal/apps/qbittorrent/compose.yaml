@@ -1,7 +1,7 @@
 services:
   qbittorrent:
     image: qbittorrentofficial/qbittorrent-nox:latest@sha256:9ebb534fe30bab98622cb84a8c3acecfd88319b2d540f52ecdec7b9f866374d7
-    container_name: qbittorrent
+    container_name: selfnook-qbittorrent
     restart: unless-stopped
     stop_grace_period: 30m
     environment:

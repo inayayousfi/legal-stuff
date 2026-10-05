@@ -4,10 +4,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/inayayousfi/legal-stuff/internal/app"
-	"github.com/inayayousfi/legal-stuff/internal/apps"
-	"github.com/inayayousfi/legal-stuff/internal/apps/caddy"
-	"github.com/inayayousfi/legal-stuff/internal/settings"
+	"github.com/inayayousfi/selfnook/internal/app"
+	"github.com/inayayousfi/selfnook/internal/apps"
+	"github.com/inayayousfi/selfnook/internal/apps/caddy"
+	"github.com/inayayousfi/selfnook/internal/settings"
 )
 
 func caddyfile(t *testing.T, mode, host, gateway string) string {

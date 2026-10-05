@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/inayayousfi/legal-stuff/internal/app"
-	"github.com/inayayousfi/legal-stuff/internal/apps/caddy"
-	"github.com/inayayousfi/legal-stuff/internal/settings"
+	"github.com/inayayousfi/selfnook/internal/app"
+	"github.com/inayayousfi/selfnook/internal/apps/caddy"
+	"github.com/inayayousfi/selfnook/internal/settings"
 )
 
 // A new named route appears in the sign-in text without editing Authentik.

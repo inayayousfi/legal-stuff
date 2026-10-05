@@ -1,4 +1,4 @@
-// Command selfhost sets up and operates the self-hosted stack. Without a
+// Command selfnook sets up and operates the self-hosted stack. Without a
 // command it opens the full-screen interface.
 package main
 
@@ -16,13 +16,13 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/inayayousfi/legal-stuff/internal/apps"
-	"github.com/inayayousfi/legal-stuff/internal/commands"
-	"github.com/inayayousfi/legal-stuff/internal/flow"
-	"github.com/inayayousfi/legal-stuff/internal/shell"
-	"github.com/inayayousfi/legal-stuff/internal/stack"
-	"github.com/inayayousfi/legal-stuff/internal/ui/cli"
-	"github.com/inayayousfi/legal-stuff/internal/ui/tui"
+	"github.com/inayayousfi/selfnook/internal/apps"
+	"github.com/inayayousfi/selfnook/internal/commands"
+	"github.com/inayayousfi/selfnook/internal/flow"
+	"github.com/inayayousfi/selfnook/internal/shell"
+	"github.com/inayayousfi/selfnook/internal/stack"
+	"github.com/inayayousfi/selfnook/internal/ui/cli"
+	"github.com/inayayousfi/selfnook/internal/ui/tui"
 )
 
 func main() {

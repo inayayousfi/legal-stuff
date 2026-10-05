@@ -7,12 +7,12 @@ import (
 	"os"
 	"strings"
 
-	"github.com/inayayousfi/legal-stuff/internal/app"
-	"github.com/inayayousfi/legal-stuff/internal/apps/authentik"
-	"github.com/inayayousfi/legal-stuff/internal/apps/caddy"
-	"github.com/inayayousfi/legal-stuff/internal/apps/vpn"
-	"github.com/inayayousfi/legal-stuff/internal/files"
-	"github.com/inayayousfi/legal-stuff/internal/flow"
+	"github.com/inayayousfi/selfnook/internal/app"
+	"github.com/inayayousfi/selfnook/internal/apps/authentik"
+	"github.com/inayayousfi/selfnook/internal/apps/caddy"
+	"github.com/inayayousfi/selfnook/internal/apps/vpn"
+	"github.com/inayayousfi/selfnook/internal/files"
+	"github.com/inayayousfi/selfnook/internal/flow"
 )
 
 //go:embed compose.yaml
@@ -51,8 +51,8 @@ var App = &app.App{
 	Tiles: func(app.Values) []app.Tile {
 		return []app.Tile{{Group: "Admin", Position: 1, YAML: `    - qBittorrent:
         icon: qbittorrent.png
-        server: media-stack
-        container: qbittorrent
+        server: selfnook
+        container: selfnook-qbittorrent
         href: "{{HOMEPAGE_VAR_URL}}/qbittorrent/"
         description: Manage downloads
 `}}
@@ -92,7 +92,7 @@ func Guide(accessURL, adminUser, adminPassword string) flow.Screen {
 		Body: `Open this link:
 ` + accessURL + `/qbittorrent/
 
-1. If the Media Stack sign-in page appears, sign in with the admin login.
+1. If the Selfnook sign-in page appears, sign in with the admin login.
 2. Username: ` + adminUser + `
 3. Password: ` + adminPassword + `
 4. In qBittorrent, open Tools > Options > Downloads.

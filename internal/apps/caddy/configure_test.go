@@ -3,9 +3,9 @@ package caddy
 import (
 	"testing"
 
-	"github.com/inayayousfi/legal-stuff/internal/app"
-	"github.com/inayayousfi/legal-stuff/internal/fake"
-	"github.com/inayayousfi/legal-stuff/internal/settings"
+	"github.com/inayayousfi/selfnook/internal/app"
+	"github.com/inayayousfi/selfnook/internal/fake"
+	"github.com/inayayousfi/selfnook/internal/settings"
 )
 
 // A saved mode with an unusable address asks again instead of stopping setup.

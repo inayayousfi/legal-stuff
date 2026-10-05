@@ -7,7 +7,7 @@ import (
 	"os"
 	"slices"
 
-	"github.com/inayayousfi/legal-stuff/internal/files"
+	"github.com/inayayousfi/selfnook/internal/files"
 )
 
 // Progress records which guided setup steps are finished, so an interrupted

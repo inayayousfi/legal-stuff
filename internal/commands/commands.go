@@ -3,8 +3,8 @@
 package commands
 
 import (
-	"github.com/inayayousfi/legal-stuff/internal/apps/vpn"
-	"github.com/inayayousfi/legal-stuff/internal/stack"
+	"github.com/inayayousfi/selfnook/internal/apps/vpn"
+	"github.com/inayayousfi/selfnook/internal/stack"
 )
 
 // Command is one action of the program.

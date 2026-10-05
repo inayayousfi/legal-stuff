@@ -9,8 +9,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/inayayousfi/legal-stuff/internal/flow"
-	"github.com/inayayousfi/legal-stuff/internal/shell"
+	"github.com/inayayousfi/selfnook/internal/flow"
+	"github.com/inayayousfi/selfnook/internal/shell"
 )
 
 // Shell records every command. Respond, when set, chooses each result.

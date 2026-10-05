@@ -1,7 +1,7 @@
 services:
   sonarr-app:
     image: lscr.io/linuxserver/sonarr:latest@sha256:373159ba768e23a3a1c497d9f2b936addf8fd5b1fdce7dd6a14080ac928bfda0
-    container_name: sonarr-app
+    container_name: selfnook-sonarr-app
     restart: unless-stopped
     environment:
       PUID: "${PUID}"

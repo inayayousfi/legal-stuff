@@ -1,4 +1,4 @@
-# Media Stack
+# Selfnook
 
 A local Docker Compose stack for Jellyfin, qBittorrent, Prowlarr, Sonarr, Radarr, Recyclarr, and a Homepage dashboard, served through one address by the Caddy reverse proxy.
 
@@ -38,7 +38,7 @@ Caddy publishes ports `80`, `443`, `5055` (Seerr), and `9091` (sign-in). The oth
 
 One admin username and password protect qBittorrent, Sonarr, Radarr, Prowlarr, and the VPN country page. Those applications no longer ask for their own logins: Sonarr, Radarr, and Prowlarr use their `External` authentication method, and qBittorrent skips its login for the stack's Docker network (`172.31.250.0/24`). Jellyfin and Seerr keep their own logins, because Jellyfin's phone and TV applications cannot pass the admin sign-in and Seerr is meant for the people who request media.
 
-Authentik checks the admin sign-in. Its database runs in its own PostgreSQL container and is stored in the Docker volume `media-stack_authentik-db`, not under `config/`, because PostgreSQL cannot keep its files in a folder shared with Windows. Back up that volume together with `config/`. Other sign-in methods are added in Authentik's administration pages at `ADDRESS:9091/if/admin/`: Google and other accounts under Directory > Federation and Social login. In local mode the address is unencrypted, so passkeys and Google sign-in cannot work there; setup and Authentik's sign-in page both say so.
+Authentik checks the admin sign-in. Its database runs in its own PostgreSQL container and is stored in the Docker volume `selfnook_authentik-db`, not under `config/`, because PostgreSQL cannot keep its files in a folder shared with Windows. Back up that volume together with `config/`. Other sign-in methods are added in Authentik's administration pages at `ADDRESS:9091/if/admin/`: Google and other accounts under Directory > Federation and Social login. In local mode the address is unencrypted, so passkeys and Google sign-in cannot work there; setup and Authentik's sign-in page both say so.
 
 Containers keep reaching each other through `sonarr:8989`, `radarr:7878`, `prowlarr:9696`, and `jellyfin:8096`. Those names belong to Caddy, which adds each application's path only when the address lacks it. Saved addresses in Prowlarr, Seerr, Recyclarr, and the Jellyfin notifications therefore need no path.
 
@@ -100,20 +100,20 @@ On Windows, Docker Desktop must have access to the selected media drive.
 
 Download the program for your computer from the latest release:
 
-https://github.com/inayayousfi/legal-stuff/releases/latest
+https://github.com/inayayousfi/selfnook/releases/latest
 
 | Computer | File | Save it as |
 | --- | --- | --- |
-| Windows | `selfhost-windows-amd64.exe` | `selfhost.exe` |
-| Linux on Intel or AMD | `selfhost-linux-amd64` | `selfhost` |
-| Linux on ARM, such as a Raspberry Pi | `selfhost-linux-arm64` | `selfhost` |
+| Windows | `selfnook-windows-amd64.exe` | `selfnook.exe` |
+| Linux on Intel or AMD | `selfnook-linux-amd64` | `selfnook` |
+| Linux on ARM, such as a Raspberry Pi | `selfnook-linux-arm64` | `selfnook` |
 
 Save it in an empty folder at its permanent location. The program keeps `.env`, `config/`, and the generated Docker Compose files in its own folder, and automatic startup uses that absolute path, so moving the folder later will break startup.
 
 On Linux, allow the program to run:
 
 ```bash
-chmod +x selfhost
+chmod +x selfnook
 ```
 
 ## First setup
@@ -123,13 +123,13 @@ Open a terminal inside that folder.
 On Windows:
 
 ```powershell
-.\selfhost.exe setup
+.\selfnook.exe setup
 ```
 
 On Linux:
 
 ```bash
-./selfhost setup
+./selfnook setup
 ```
 
 The program performs these checks and actions:
@@ -322,54 +322,54 @@ Anime uses the same progressive profiles.
 
 The stack expects subtitles to be embedded in the media files. It does not install Bazarr or download missing subtitles.
 
-Recyclarr runs after setup and after every `selfhost start`. Running `docker compose up -d` directly skips that synchronization.
+Recyclarr runs after setup and after every `selfnook start`. Running `docker compose up -d` directly skips that synchronization.
 
 ## Daily commands
 
 Show every command with a short description:
 
 ```bash
-./selfhost help
+./selfnook help
 ```
 
 `-h` prints the same general help. Add `-h` after any command for its detailed help:
 
 ```bash
-./selfhost setup -h
-./selfhost start -h
-./selfhost stop -h
-./selfhost status -h
-./selfhost vpn-status -h
-./selfhost credentials -h
+./selfnook setup -h
+./selfnook start -h
+./selfnook stop -h
+./selfnook status -h
+./selfnook vpn-status -h
+./selfnook credentials -h
 ```
 
 Start the stack and synchronize Recyclarr:
 
 ```bash
-./selfhost start
+./selfnook start
 ```
 
-On Windows, replace `./selfhost` with `.\selfhost.exe`.
+On Windows, replace `./selfnook` with `.\selfnook.exe`.
 
 Show container status:
 
 ```bash
-./selfhost status
+./selfnook status
 ```
 
 Check the selected VPN gateway (Gluetun health or Tailscale exit-node availability):
 
 ```bash
-./selfhost vpn-status
+./selfnook vpn-status
 ```
 
 List saved groups, or display one group (including any saved password or API key) and change its credentials:
 
 ```bash
-./selfhost credentials
-./selfhost credentials admin
-./selfhost credentials jellyfin
-./selfhost credentials vpn
+./selfnook credentials
+./selfnook credentials admin
+./selfnook credentials jellyfin
+./selfnook credentials vpn
 ```
 
 After the values are shown, answer `y` to replace credentials one by one; press Enter to keep a saved value. Answer `n` or press Enter to leave everything unchanged. For Jellyfin and the VPN, this updates `.env` only, so change the password in the application as well. The admin username and password, VPN credentials, and the Sonarr and Radarr API keys take effect at the next `start`; the admin sign-in needs no other change. The Jellyfin values belong to the administrator account, which can create other Jellyfin users and reset their passwords in Jellyfin's Dashboard. The values appear in the terminal, so use this on a private screen.
@@ -377,7 +377,7 @@ After the values are shown, answer `y` to replace credentials one by one; press 
 Stop the stack:
 
 ```bash
-./selfhost stop
+./selfnook stop
 ```
 
 ## Automatic startup
@@ -387,7 +387,7 @@ Stop the stack:
 The setup can install:
 
 ```text
-~/.config/systemd/user/media-stack.service
+~/.config/systemd/user/selfnook.service
 ```
 
 It starts with the user's systemd session.
@@ -395,14 +395,14 @@ It starts with the user's systemd session.
 Inspect it with:
 
 ```bash
-systemctl --user status media-stack.service
+systemctl --user status selfnook.service
 ```
 
 Disable and remove it with:
 
 ```bash
-systemctl --user disable --now media-stack.service
-rm ~/.config/systemd/user/media-stack.service
+systemctl --user disable --now selfnook.service
+rm ~/.config/systemd/user/selfnook.service
 systemctl --user daemon-reload
 ```
 
@@ -411,7 +411,7 @@ systemctl --user daemon-reload
 The setup can instead install:
 
 ```text
-/etc/systemd/system/media-stack.service
+/etc/systemd/system/selfnook.service
 ```
 
 This option requires `sudo` and starts the stack during system boot.
@@ -419,20 +419,20 @@ This option requires `sudo` and starts the stack during system boot.
 Inspect it with:
 
 ```bash
-sudo systemctl status media-stack.service
+sudo systemctl status selfnook.service
 ```
 
 Disable and remove it with:
 
 ```bash
-sudo systemctl disable --now media-stack.service
-sudo rm /etc/systemd/system/media-stack.service
+sudo systemctl disable --now selfnook.service
+sudo rm /etc/systemd/system/selfnook.service
 sudo systemctl daemon-reload
 ```
 
 ### Windows
 
-The setup creates a hidden launcher named `media-stack.vbs` in the current user's Startup folder.
+The setup creates a hidden launcher named `selfnook.vbs` in the current user's Startup folder.
 
 The launcher waits up to five minutes for Docker Desktop. Startup output is written to:
 
@@ -453,7 +453,7 @@ Container images are pinned by multi-platform digest in each application's Compo
 After replacing the program with a newer release, restart the stack. Docker downloads every image whose pinned digest changed:
 
 ```bash
-./selfhost start
+./selfnook start
 ```
 
 Application data remains under `config/`.

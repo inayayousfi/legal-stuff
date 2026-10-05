@@ -9,8 +9,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/inayayousfi/legal-stuff/internal/app"
-	"github.com/inayayousfi/legal-stuff/internal/files"
+	"github.com/inayayousfi/selfnook/internal/app"
+	"github.com/inayayousfi/selfnook/internal/files"
 )
 
 //go:embed compose.yaml

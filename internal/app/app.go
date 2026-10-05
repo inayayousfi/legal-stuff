@@ -10,9 +10,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/inayayousfi/legal-stuff/internal/flow"
-	"github.com/inayayousfi/legal-stuff/internal/settings"
-	"github.com/inayayousfi/legal-stuff/internal/shell"
+	"github.com/inayayousfi/selfnook/internal/flow"
+	"github.com/inayayousfi/selfnook/internal/settings"
+	"github.com/inayayousfi/selfnook/internal/shell"
 )
 
 // App is everything one application adds. Every field except Name is optional.
@@ -261,12 +261,16 @@ func (e *Env) Step(name string, again bool, run func() error) error {
 	return e.Progress.Complete(name)
 }
 
-// The Docker network every container joins. qBittorrent skips its login for
-// requests from this address range.
+// Name is the stack's Compose project and the network every container
+// joins. Every container name starts with Name and a hyphen. qBittorrent
+// skips its login for requests from NetworkSubnet.
 const (
-	NetworkName   = "media-stack"
+	Name          = "selfnook"
 	NetworkSubnet = "172.31.250.0/24"
 )
+
+// Container is the name of the container that runs service.
+func Container(service string) string { return Name + "-" + service }
 
 // RandomToken returns a random secret of n bytes, encoded without characters
 // that .env or URLs would need to escape.

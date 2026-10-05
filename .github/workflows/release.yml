@@ -23,9 +23,9 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           mkdir dist
-          GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/selfhost-linux-amd64 ./cmd/selfhost
-          GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/selfhost-linux-arm64 ./cmd/selfhost
-          GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/selfhost-windows-amd64.exe ./cmd/selfhost
+          GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/selfnook-linux-amd64 ./cmd/selfnook
+          GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/selfnook-linux-arm64 ./cmd/selfnook
+          GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/selfnook-windows-amd64.exe ./cmd/selfnook
           cp migrate_from_python.py dist/
       - name: Publish
         env:

@@ -14,9 +14,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/inayayousfi/legal-stuff/internal/commands"
-	"github.com/inayayousfi/legal-stuff/internal/flow"
-	"github.com/inayayousfi/legal-stuff/internal/stack"
+	"github.com/inayayousfi/selfnook/internal/commands"
+	"github.com/inayayousfi/selfnook/internal/flow"
+	"github.com/inayayousfi/selfnook/internal/stack"
 )
 
 // Factory builds the stack a command runs with: its interface, where command

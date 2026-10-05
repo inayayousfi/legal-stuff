@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/inayayousfi/legal-stuff/internal/app"
-	"github.com/inayayousfi/legal-stuff/internal/files"
-	"github.com/inayayousfi/legal-stuff/internal/flow"
-	"github.com/inayayousfi/legal-stuff/internal/shell"
+	"github.com/inayayousfi/selfnook/internal/app"
+	"github.com/inayayousfi/selfnook/internal/files"
+	"github.com/inayayousfi/selfnook/internal/flow"
+	"github.com/inayayousfi/selfnook/internal/shell"
 )
 
 //go:embed compose.yaml countrypage/Dockerfile countrypage/main.go
@@ -79,8 +79,8 @@ var App = &app.App{
 			return []app.Tile{{Group: "Admin", Position: 5, YAML: `    - Gluetun:
         icon: gluetun.png
         description: qBittorrent and Prowlarr VPN connection
-        server: media-stack
-        container: gluetun
+        server: selfnook
+        container: selfnook-gluetun
         href: "{{HOMEPAGE_VAR_URL}}/vpn-country/"
         widget:
           type: gluetun
@@ -91,8 +91,8 @@ var App = &app.App{
 		return []app.Tile{{Group: "Admin", Position: 5, YAML: `    - Tailscale:
         icon: tailscale.png
         description: qBittorrent and Prowlarr VPN connection
-        server: media-stack
-        container: tailscale-vpn
+        server: selfnook
+        container: selfnook-tailscale-vpn
 `}}
 	},
 	Credentials: &app.CredentialGroup{
@@ -391,7 +391,7 @@ func Countries(servers []map[string]any) []string {
 // the VPN country page offers. Failures leave the previous list in place.
 func SaveCountryList(s shell.Shell, v app.Values, configDir string) {
 	flag := "-" + strings.ReplaceAll(v.Get("VPN_SERVICE_PROVIDER"), " ", "-")
-	result, err := shell.Capture(s, "docker", "exec", Gluetun, "sh", "-c",
+	result, err := shell.Capture(s, "docker", "exec", app.Container(Gluetun), "sh", "-c",
 		"/gluetun-entrypoint format-servers "+shellQuote(flag)+" -format json -output /tmp/servers.json >/dev/null && cat /tmp/servers.json")
 	if err != nil || result.Code != 0 {
 		return
@@ -412,10 +412,10 @@ func shellQuote(value string) string {
 // the Tailscale exit node is online. It fails only when a command cannot run.
 func Ready(s shell.Shell, gateway string) (bool, error) {
 	if gateway == Gluetun {
-		result, err := shell.Capture(s, "docker", "inspect", Gluetun, "--format", "{{.State.Health.Status}}")
+		result, err := shell.Capture(s, "docker", "inspect", app.Container(Gluetun), "--format", "{{.State.Health.Status}}")
 		return err == nil && result.Code == 0 && strings.TrimSpace(result.Stdout) == "healthy", err
 	}
-	result, err := shell.Capture(s, "docker", "exec", Tailscale, "tailscale", "status", "--json")
+	result, err := shell.Capture(s, "docker", "exec", app.Container(Tailscale), "tailscale", "status", "--json")
 	if err != nil || result.Code != 0 {
 		return false, err
 	}

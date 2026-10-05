@@ -4,10 +4,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/inayayousfi/legal-stuff/internal/app"
-	"github.com/inayayousfi/legal-stuff/internal/apps"
-	"github.com/inayayousfi/legal-stuff/internal/apps/homepage"
-	"github.com/inayayousfi/legal-stuff/internal/settings"
+	"github.com/inayayousfi/selfnook/internal/app"
+	"github.com/inayayousfi/selfnook/internal/apps"
+	"github.com/inayayousfi/selfnook/internal/apps/homepage"
+	"github.com/inayayousfi/selfnook/internal/settings"
 )
 
 // Tiles follow their own positions, not the order of the registry.

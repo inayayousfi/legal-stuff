@@ -6,12 +6,12 @@ import (
 	"embed"
 	"strconv"
 
-	"github.com/inayayousfi/legal-stuff/internal/app"
-	"github.com/inayayousfi/legal-stuff/internal/apps/caddy"
-	"github.com/inayayousfi/legal-stuff/internal/apps/jellyfin"
-	"github.com/inayayousfi/legal-stuff/internal/apps/radarr"
-	"github.com/inayayousfi/legal-stuff/internal/apps/sonarr"
-	"github.com/inayayousfi/legal-stuff/internal/flow"
+	"github.com/inayayousfi/selfnook/internal/app"
+	"github.com/inayayousfi/selfnook/internal/apps/caddy"
+	"github.com/inayayousfi/selfnook/internal/apps/jellyfin"
+	"github.com/inayayousfi/selfnook/internal/apps/radarr"
+	"github.com/inayayousfi/selfnook/internal/apps/sonarr"
+	"github.com/inayayousfi/selfnook/internal/flow"
 )
 
 //go:embed compose.yaml
@@ -36,8 +36,8 @@ var App = &app.App{
 	Tiles: func(app.Values) []app.Tile {
 		return []app.Tile{{Group: "Media", Position: 2, YAML: `    - Seerr:
         icon: seerr.png
-        server: media-stack
-        container: seerr
+        server: selfnook
+        container: selfnook-seerr
         href: "{{HOMEPAGE_VAR_URL}}/seerr"
         description: Request movies and series
 `}}

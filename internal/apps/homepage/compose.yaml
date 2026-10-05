@@ -1,7 +1,7 @@
 services:
   homepage:
     image: ghcr.io/gethomepage/homepage:latest@sha256:643bd0be730d40f69d58028a55d1a896739333e8815786df42bc97f109ecbe61
-    container_name: homepage
+    container_name: selfnook-homepage
     restart: unless-stopped
     environment:
       HOMEPAGE_ALLOWED_HOSTS: "${ADMIN_ACCESS_HOST}"
@@ -17,7 +17,7 @@ services:
 
   dockerproxy:
     image: tecnativa/docker-socket-proxy:latest@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459
-    container_name: dockerproxy
+    container_name: selfnook-dockerproxy
     restart: unless-stopped
     environment:
       CONTAINERS: "1"
@@ -27,7 +27,7 @@ services:
 
   glances:
     image: nicolargo/glances:latest-full@sha256:c47322ae60260f6039302dde576c8250f28e67cea77f5b93a270e6cd90995665
-    container_name: glances
+    container_name: selfnook-glances
     restart: unless-stopped
     pid: host
     environment:

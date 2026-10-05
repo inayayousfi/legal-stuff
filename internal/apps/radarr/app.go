@@ -4,9 +4,9 @@ package radarr
 import (
 	"embed"
 
-	"github.com/inayayousfi/legal-stuff/internal/app"
-	"github.com/inayayousfi/legal-stuff/internal/apps/caddy"
-	"github.com/inayayousfi/legal-stuff/internal/flow"
+	"github.com/inayayousfi/selfnook/internal/app"
+	"github.com/inayayousfi/selfnook/internal/apps/caddy"
+	"github.com/inayayousfi/selfnook/internal/flow"
 )
 
 //go:embed compose.yaml
@@ -46,8 +46,8 @@ var App = &app.App{
 	Tiles: func(app.Values) []app.Tile {
 		return []app.Tile{{Group: "Admin", Position: 3, YAML: `    - Radarr:
         icon: radarr.png
-        server: media-stack
-        container: radarr-app
+        server: selfnook
+        container: selfnook-radarr-app
         href: "{{HOMEPAGE_VAR_URL}}/radarr"
         description: Manage movies
 `}}

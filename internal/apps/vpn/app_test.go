@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inayayousfi/legal-stuff/internal/app"
-	"github.com/inayayousfi/legal-stuff/internal/fake"
-	"github.com/inayayousfi/legal-stuff/internal/settings"
-	"github.com/inayayousfi/legal-stuff/internal/shell"
+	"github.com/inayayousfi/selfnook/internal/app"
+	"github.com/inayayousfi/selfnook/internal/fake"
+	"github.com/inayayousfi/selfnook/internal/settings"
+	"github.com/inayayousfi/selfnook/internal/shell"
 )
 
 func newValues() app.Values { return app.ValuesFor(settings.NewValues(), App) }

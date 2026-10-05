@@ -11,14 +11,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/inayayousfi/legal-stuff/internal/app"
-	"github.com/inayayousfi/legal-stuff/internal/flow"
-	"github.com/inayayousfi/legal-stuff/internal/settings"
-	"github.com/inayayousfi/legal-stuff/internal/shell"
+	"github.com/inayayousfi/selfnook/internal/app"
+	"github.com/inayayousfi/selfnook/internal/flow"
+	"github.com/inayayousfi/selfnook/internal/settings"
+	"github.com/inayayousfi/selfnook/internal/shell"
 )
 
 // Command is the program name shown in instructions.
-const Command = "selfhost"
+const Command = "selfnook"
 
 // Stack is one installation: the folder holding .env, config/, and the
 // generated Compose files.
@@ -36,7 +36,7 @@ type Stack struct {
 // coreSettings are the .env values the stack itself owns.
 var coreSettings = []app.Setting{
 	{Key: "MEDIA_DIR", Example: "/absolute/path/to/Media", Required: true},
-	{Key: "CONFIG_DIR", Example: "/absolute/path/to/the/selfhost/folder/config", Required: true},
+	{Key: "CONFIG_DIR", Example: "/absolute/path/to/the/selfnook/folder/config", Required: true},
 	{Key: "PUID", Example: "1000", Required: true},
 	{Key: "PGID", Example: "1000", Required: true},
 	{Key: "TZ", Example: "Europe/Paris", Required: true},
@@ -164,10 +164,35 @@ func (s *Stack) createDirectories(values *settings.Values) error {
 	return nil
 }
 
+// retiredProject is the Compose project name that earlier versions used.
+const retiredProject = "media-stack"
+
+// removeRetiredProject removes the containers and network of an install
+// made under the earlier project name, which would otherwise hold the ports
+// and the address range. Configuration and media folders are kept.
+func (s *Stack) removeRetiredProject() error {
+	containers, err := shell.Capture(s.Shell, "docker", "ps", "--all", "--quiet", "--filter", "label=com.docker.compose.project="+retiredProject)
+	if err != nil {
+		return err
+	}
+	network, err := shell.Capture(s.Shell, "docker", "network", "inspect", retiredProject)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(containers.Stdout) == "" && network.Code != 0 {
+		return nil
+	}
+	if err := shell.Compose(s.Shell, "--project-name", retiredProject, "down", "--remove-orphans"); err != nil {
+		return err
+	}
+	_, err = shell.Capture(s.Shell, "docker", "image", "rm", retiredProject+"/vpn-country")
+	return err
+}
+
 // recreateNetworkIfNeeded removes the stack when its network uses another
 // address range, so Compose recreates it with the expected one.
 func (s *Stack) recreateNetworkIfNeeded() error {
-	result, err := shell.Capture(s.Shell, "docker", "network", "inspect", app.NetworkName, "--format", "{{range .IPAM.Config}}{{.Subnet}} {{end}}")
+	result, err := shell.Capture(s.Shell, "docker", "network", "inspect", app.Name, "--format", "{{range .IPAM.Config}}{{.Subnet}} {{end}}")
 	if err != nil {
 		return err
 	}
@@ -272,6 +297,9 @@ func (s *Stack) Start() error {
 		return err
 	}
 	if err := s.writeCompose(values); err != nil {
+		return err
+	}
+	if err := s.removeRetiredProject(); err != nil {
 		return err
 	}
 	if err := s.recreateNetworkIfNeeded(); err != nil {

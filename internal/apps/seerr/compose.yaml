@@ -1,7 +1,7 @@
 services:
   seerr:
     image: seerr/seerr:latest@sha256:27602401178d54f1964442287b9f23f67a3fa2252645ee8065839ea1c3f69e45
-    container_name: seerr
+    container_name: selfnook-seerr
     user: "${PUID}:${PGID}"
     init: true
     restart: unless-stopped

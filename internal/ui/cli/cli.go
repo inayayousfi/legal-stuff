@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/inayayousfi/legal-stuff/internal/flow"
+	"github.com/inayayousfi/selfnook/internal/flow"
 )
 
 // UI reads answers from In and prints to Out.

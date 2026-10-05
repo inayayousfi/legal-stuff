@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/inayayousfi/legal-stuff/internal/fake"
-	"github.com/inayayousfi/legal-stuff/internal/settings"
+	"github.com/inayayousfi/selfnook/internal/fake"
+	"github.com/inayayousfi/selfnook/internal/settings"
 )
 
 func credentialStack(t *testing.T, values map[string]string, answers map[string]string) (*Stack, *fake.UI) {
@@ -141,7 +141,7 @@ func TestUnconfiguredGroupReportsNoSavedValues(t *testing.T) {
 
 func TestCredentialsWithoutSetupAsksForSetup(t *testing.T) {
 	s := newTestStack(t, &fake.UI{}, &fake.Shell{})
-	if err := s.Credentials("admin"); err == nil || err.Error() != "Run 'selfhost setup' first." {
+	if err := s.Credentials("admin"); err == nil || err.Error() != "Run 'selfnook setup' first." {
 		t.Errorf("err = %v", err)
 	}
 }

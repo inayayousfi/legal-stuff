@@ -11,7 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/inayayousfi/legal-stuff/internal/files"
+	"github.com/inayayousfi/selfnook/internal/files"
 )
 
 // Values holds .env entries in the order they were first set, so a rewrite

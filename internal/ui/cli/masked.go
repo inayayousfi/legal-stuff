@@ -5,7 +5,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/inayayousfi/legal-stuff/internal/flow"
+	"github.com/inayayousfi/selfnook/internal/flow"
 )
 
 // ReadMasked reads characters until Enter, handling Backspace and Ctrl+C.

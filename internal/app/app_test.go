@@ -3,7 +3,7 @@ package app
 import (
 	"testing"
 
-	"github.com/inayayousfi/legal-stuff/internal/settings"
+	"github.com/inayayousfi/selfnook/internal/settings"
 )
 
 // An app changes only its own settings; changing another app's value stops the program.
