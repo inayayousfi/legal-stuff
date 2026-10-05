@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/inayayousfi/legal-stuff/internal/app"
-	"github.com/inayayousfi/legal-stuff/internal/apps/vpn"
 	"github.com/inayayousfi/legal-stuff/internal/flow"
 	"github.com/inayayousfi/legal-stuff/internal/settings"
 	"github.com/inayayousfi/legal-stuff/internal/shell"
@@ -30,25 +29,20 @@ type Stack struct {
 	UI    flow.UI
 	// Program is the executable that automatic start runs.
 	Program string
-	// Sleep is replaced by tests.
+	// Sleep waits between checks. Tests replace it.
 	Sleep func(time.Duration)
 }
 
-func (s *Stack) envFile() string { return filepath.Join(s.Root, ".env") }
-
-func (s *Stack) env(values *settings.Values, progress *settings.Progress) *app.Env {
-	return &app.Env{
-		Root:     s.Root,
-		Apps:     s.Apps,
-		Values:   values,
-		Shell:    s.Shell,
-		UI:       s.UI,
-		Progress: progress,
-		SaveValues: func() error {
-			return settings.Write(s.envFile(), values)
-		},
-	}
+// coreSettings are the .env values the stack itself owns.
+var coreSettings = []app.Setting{
+	{Key: "MEDIA_DIR", Example: "/absolute/path/to/Media", Required: true},
+	{Key: "CONFIG_DIR", Example: "/absolute/path/to/the/selfhost/folder/config", Required: true},
+	{Key: "PUID", Example: "1000", Required: true},
+	{Key: "PGID", Example: "1000", Required: true},
+	{Key: "TZ", Example: "Europe/Paris", Required: true},
 }
+
+func (s *Stack) envFile() string { return filepath.Join(s.Root, ".env") }
 
 func (s *Stack) sleep(d time.Duration) {
 	if s.Sleep != nil {
@@ -58,31 +52,56 @@ func (s *Stack) sleep(d time.Duration) {
 	time.Sleep(d)
 }
 
+// env gives one app's hook its view of the values and every app's contributions.
+func (s *Stack) env(a *app.App, values *settings.Values, progress *settings.Progress) *app.Env {
+	routes, tiles := s.contributions(values)
+	return &app.Env{
+		Root:     s.Root,
+		Values:   app.ValuesFor(values, a),
+		Shell:    s.Shell,
+		UI:       s.UI,
+		Routes:   routes,
+		Tiles:    tiles,
+		Progress: progress,
+		SaveValues: func() error {
+			return settings.Write(s.envFile(), values)
+		},
+		Sleep: s.sleep,
+	}
+}
+
+// contributions collects every app's routes and tiles in registry order.
+func (s *Stack) contributions(values *settings.Values) ([]app.Route, []app.Tile) {
+	var routes []app.Route
+	var tiles []app.Tile
+	for _, a := range s.Apps {
+		v := app.ValuesFor(values, a)
+		if a.Routes != nil {
+			routes = append(routes, a.Routes(v)...)
+		}
+		if a.Tiles != nil {
+			tiles = append(tiles, a.Tiles(v)...)
+		}
+	}
+	return routes, tiles
+}
+
 func (s *Stack) waitForDocker() error {
-	return shell.WaitForDocker(s.Shell, shell.DockerWait, s.sleep)
+	return shell.WaitForDocker(s.Shell, s.sleep)
 }
 
 var errNoSetup = errors.New("Run '" + Command + " setup' first.")
 
-var coreRequired = []string{"MEDIA_DIR", "CONFIG_DIR", "PUID", "PGID", "TZ"}
-
 // load reads .env and checks that every app has what it needs to start.
 func (s *Stack) load() (*settings.Values, error) {
-	if _, err := os.Stat(s.envFile()); err != nil {
-		return nil, errNoSetup
-	}
-	values, err := settings.Read(s.envFile())
+	values, err := s.readSaved()
 	if err != nil {
 		return nil, err
 	}
-	required := slices.Clone(coreRequired)
-	for _, a := range s.Apps {
-		required = append(required, a.Required...)
-	}
 	var missing []string
-	for _, key := range required {
-		if !values.Has(key) && !slices.Contains(missing, key) {
-			missing = append(missing, key)
+	for _, setting := range s.settings() {
+		if setting.Required && !values.Has(setting.Key) {
+			missing = append(missing, setting.Key)
 		}
 	}
 	if len(missing) > 0 {
@@ -96,12 +115,21 @@ func (s *Stack) load() (*settings.Values, error) {
 	}
 	for _, a := range s.Apps {
 		if a.Validate != nil {
-			if err := a.Validate(values); err != nil {
+			if err := a.Validate(app.ValuesFor(values, a)); err != nil {
 				return nil, err
 			}
 		}
 	}
 	return values, nil
+}
+
+// settings lists the core settings, then each app's settings in registry order.
+func (s *Stack) settings() []app.Setting {
+	all := slices.Clone(coreSettings)
+	for _, a := range s.Apps {
+		all = append(all, a.Settings...)
+	}
+	return all
 }
 
 // readSaved reads .env without requiring a finished setup.
@@ -115,7 +143,7 @@ func (s *Stack) readSaved() (*settings.Values, error) {
 func (s *Stack) derive(values *settings.Values) {
 	for _, a := range s.Apps {
 		if a.Derive != nil {
-			a.Derive(values)
+			a.Derive(app.ValuesFor(values, a))
 		}
 	}
 }
@@ -150,15 +178,29 @@ func (s *Stack) recreateNetworkIfNeeded() error {
 	return nil
 }
 
-// startServices runs every app's Prepare hook, starts the containers that do
-// not use the VPN, then starts the VPN users once the gateway is ready.
-func (s *Stack) startServices(e *app.Env) error {
+// StoppedError reports a start that failed after stopping the services
+// behind the VPN. They stay stopped until the next successful start.
+type StoppedError struct {
+	Services []string
+	Err      error
+}
+
+func (e *StoppedError) Error() string {
+	return e.Err.Error() + "\nStopped until the next successful start: " + strings.Join(e.Services, ", ")
+}
+
+func (e *StoppedError) Unwrap() error { return e.Err }
+
+// startServices stops the services behind the VPN, runs every app's Prepare
+// hook, starts the other containers, runs every Started hook, then starts
+// the services behind the VPN.
+func (s *Stack) startServices(values *settings.Values, progress *settings.Progress) error {
 	var behindVPN, active, inactive []string
 	for _, a := range s.Apps {
 		behindVPN = append(behindVPN, a.BehindVPN...)
 		var services []string
 		if a.Services != nil {
-			services = a.Services(e.Values)
+			services = a.Services(app.ValuesFor(values, a))
 		}
 		for _, service := range a.Optional {
 			if !slices.Contains(services, service) {
@@ -171,37 +213,46 @@ func (s *Stack) startServices(e *app.Env) error {
 			}
 		}
 	}
-	if err := e.Compose(append([]string{"stop"}, append(behindVPN, inactive...)...)...); err != nil {
+	if err := shell.Compose(s.Shell, append([]string{"stop"}, append(behindVPN, inactive...)...)...); err != nil {
 		return err
 	}
+	if err := s.startWhileVPNServicesStopped(values, progress, active); err != nil {
+		return &StoppedError{Services: behindVPN, Err: err}
+	}
+	if err := shell.Compose(s.Shell, append([]string{"up", "-d", "--no-deps"}, behindVPN...)...); err != nil {
+		return &StoppedError{Services: behindVPN, Err: err}
+	}
+	return nil
+}
+
+func (s *Stack) startWhileVPNServicesStopped(values *settings.Values, progress *settings.Progress, active []string) error {
 	var restart []string
 	for _, a := range s.Apps {
 		if a.Prepare == nil {
 			continue
 		}
-		services, err := a.Prepare(e)
+		services, err := a.Prepare(s.env(a, values, progress))
 		if err != nil {
 			return err
 		}
 		restart = append(restart, services...)
 	}
-	if err := e.Compose(append([]string{"up", "-d", "--no-deps", "--remove-orphans"}, active...)...); err != nil {
+	if err := shell.Compose(s.Shell, append([]string{"up", "-d", "--no-deps", "--remove-orphans"}, active...)...); err != nil {
 		return err
 	}
 	for _, service := range restart {
-		if err := e.Compose("restart", service); err != nil {
+		if err := shell.Compose(s.Shell, "restart", service); err != nil {
 			return err
 		}
 	}
 	for _, a := range s.Apps {
 		if a.Started != nil {
-			if err := a.Started(e); err != nil {
+			if err := a.Started(s.env(a, values, progress)); err != nil {
 				return err
 			}
 		}
 	}
-	vpn.WaitUntilReady(s.Shell, e.Values, s.UI.Say)
-	return e.Compose(append([]string{"up", "-d", "--no-deps"}, behindVPN...)...)
+	return nil
 }
 
 // Start starts the stack with the saved values.
@@ -210,9 +261,11 @@ func (s *Stack) Start() error {
 	if err != nil {
 		return err
 	}
+	if err := s.migrate(values); err != nil {
+		return err
+	}
 	s.derive(values)
-	e := s.env(values, nil)
-	if err := e.SaveValues(); err != nil {
+	if err := settings.Write(s.envFile(), values); err != nil {
 		return err
 	}
 	if err := s.waitForDocker(); err != nil {
@@ -227,12 +280,12 @@ func (s *Stack) Start() error {
 	if err := s.createDirectories(values); err != nil {
 		return err
 	}
-	if err := s.startServices(e); err != nil {
+	if err := s.startServices(values, nil); err != nil {
 		return err
 	}
 	for _, a := range s.Apps {
 		if a.AfterStart != nil {
-			if err := a.AfterStart(e); err != nil {
+			if err := a.AfterStart(s.env(a, values, nil)); err != nil {
 				return err
 			}
 		}
@@ -264,8 +317,8 @@ func (s *Stack) compose(args ...string) error {
 	return shell.Compose(s.Shell, args...)
 }
 
-// VPNStatus reports whether the VPN gateway carries traffic.
-func (s *Stack) VPNStatus() error {
+// AppStatus shows one app's own health report.
+func (s *Stack) AppStatus(a *app.App) error {
 	values, err := s.load()
 	if err != nil {
 		return err
@@ -273,7 +326,7 @@ func (s *Stack) VPNStatus() error {
 	if err := s.waitForDocker(); err != nil {
 		return err
 	}
-	text, err := vpn.Status(s.Shell, values)
+	text, err := a.Status(s.env(a, values, nil))
 	if err != nil {
 		return err
 	}

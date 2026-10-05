@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"io"
 	"strings"
 	"sync"
 
@@ -48,8 +47,6 @@ func (b *bridge) Say(text string) {
 		b.program.Send(logMsg(line))
 	}
 }
-
-func (b *bridge) Output() io.Writer { return b.output }
 
 // takeTerminal lets a command such as sudo use the terminal directly.
 func (b *bridge) takeTerminal(run func() error) error {

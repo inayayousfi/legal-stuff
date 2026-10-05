@@ -4,9 +4,7 @@
 package vpn
 
 import (
-	"crypto/rand"
 	"embed"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,8 +15,8 @@ import (
 	"time"
 
 	"github.com/inayayousfi/legal-stuff/internal/app"
+	"github.com/inayayousfi/legal-stuff/internal/files"
 	"github.com/inayayousfi/legal-stuff/internal/flow"
-	"github.com/inayayousfi/legal-stuff/internal/settings"
 	"github.com/inayayousfi/legal-stuff/internal/shell"
 )
 
@@ -26,19 +24,32 @@ import (
 var compose embed.FS
 
 const (
-	Gluetun     = "gluetun"
-	Tailscale   = "tailscale-vpn"
-	gatewayKey  = "VPN_GATEWAY_SERVICE"
-	countryPage = "vpn-country"
+	Gluetun      = "gluetun"
+	Tailscale    = "tailscale-vpn"
+	gatewayKey   = "VPN_GATEWAY_SERVICE"
+	countriesKey = "VPN_SERVER_COUNTRIES"
+	countryPage  = "vpn-country"
 )
 
-// Gateway returns the selected gateway service.
-func Gateway(v *settings.Values) string { return v.Get(gatewayKey) }
+// Gateway returns the selected gateway service, whose network qBittorrent and Prowlarr share.
+func Gateway(v app.Values) string { return v.Get(gatewayKey) }
 
 var App = &app.App{
-	Name:    "vpn",
+	Name: "vpn",
+	Settings: []app.Setting{
+		{Key: gatewayKey, Example: Gluetun, Required: true},
+		{Key: "VPN_SERVICE_PROVIDER", Example: "nordvpn"},
+		{Key: "VPN_TYPE", Example: "openvpn"},
+		{Key: countriesKey},
+		{Key: "VPN_OPENVPN_USER", Example: "replace_with_your_vpn_service_username"},
+		{Key: "VPN_OPENVPN_PASSWORD", Example: "replace_with_your_vpn_service_password"},
+		{Key: "GLUETUN_API_KEY", Example: "generated_automatically_by_setup"},
+		{Key: "GLUETUN_CONTROL_KEY", Example: "generated_automatically_by_setup"},
+		{Key: "TAILSCALE_AUTH_KEY"},
+		{Key: "TAILSCALE_EXIT_NODE"},
+	},
 	Compose: compose,
-	Services: func(v *settings.Values) []string {
+	Services: func(v app.Values) []string {
 		if Gateway(v) == Gluetun {
 			return []string{Gluetun, countryPage}
 		}
@@ -46,35 +57,26 @@ var App = &app.App{
 	},
 	Optional:   []string{Gluetun, Tailscale, countryPage},
 	ConfigDirs: []string{"gluetun", "tailscale", countryPage},
-	Required:   []string{gatewayKey},
 	Validate:   validate,
 	Configure:  configure,
 	Derive:     derive,
-	Prepare: func(e *app.Env) ([]string, error) {
-		if Gateway(e.Values) != Gluetun {
-			return nil, nil
-		}
-		changed, err := WriteGluetunAuth(e.ConfigDir(), e.Values)
-		if err != nil || !changed {
-			return nil, err
-		}
-		return []string{Gluetun}, nil
-	},
+	Prepare:    prepare,
 	Started: func(e *app.Env) error {
 		if Gateway(e.Values) == Gluetun {
-			SaveCountryList(e.Shell, e.Values)
+			SaveCountryList(e.Shell, e.Values, e.ConfigDir())
 		}
-		return nil
+		return WaitUntilReady(e)
 	},
-	Routes: func(v *settings.Values) []app.Route {
+	Status: Status,
+	Routes: func(v app.Values) []app.Route {
 		if Gateway(v) != Gluetun {
 			return nil
 		}
-		return []app.Route{{Path: "/vpn-country", Upstream: "vpn-country:8090", StripPrefix: true}}
+		return []app.Route{{Name: "VPN country page", Path: "/vpn-country", Upstream: "vpn-country:8090", StripPrefix: true}}
 	},
-	Tiles: func(v *settings.Values) []app.Tile {
+	Tiles: func(v app.Values) []app.Tile {
 		if Gateway(v) == Gluetun {
-			return []app.Tile{{Group: "Admin", YAML: `    - Gluetun:
+			return []app.Tile{{Group: "Admin", Position: 5, YAML: `    - Gluetun:
         icon: gluetun.png
         description: qBittorrent and Prowlarr VPN connection
         server: media-stack
@@ -86,7 +88,7 @@ var App = &app.App{
           key: "{{HOMEPAGE_VAR_GLUETUN_API_KEY}}"
 `}}
 		}
-		return []app.Tile{{Group: "Admin", YAML: `    - Tailscale:
+		return []app.Tile{{Group: "Admin", Position: 5, YAML: `    - Tailscale:
         icon: tailscale.png
         description: qBittorrent and Prowlarr VPN connection
         server: media-stack
@@ -98,20 +100,20 @@ var App = &app.App{
 		Fields: []app.CredentialField{
 			{Label: "Provider", Key: "VPN_SERVICE_PROVIDER"},
 			{Label: "Gateway", Key: gatewayKey},
-			{Label: "Server countries", Key: "VPN_SERVER_COUNTRIES"},
+			{Label: "Server countries", Key: countriesKey},
 			{Label: "Service username", Key: "VPN_OPENVPN_USER", Kind: app.PlainText, UsedByStack: true},
 			{Label: "Service password", Key: "VPN_OPENVPN_PASSWORD", Kind: app.Password, UsedByStack: true},
 			{Label: "Exit node", Key: "TAILSCALE_EXIT_NODE", Kind: app.PlainText, UsedByStack: true},
 			{Label: "Auth key", Key: "TAILSCALE_AUTH_KEY", Kind: app.Password, UsedByStack: true},
 		},
-		Visible: func(v *settings.Values, f app.CredentialField) bool {
+		Visible: func(v app.Values, f app.CredentialField) bool {
 			tailscaleField := f.Key == "TAILSCALE_EXIT_NODE" || f.Key == "TAILSCALE_AUTH_KEY"
 			return f.Key == gatewayKey || tailscaleField == (Gateway(v) == Tailscale)
 		},
 	},
 }
 
-func validate(v *settings.Values) error {
+func validate(v app.Values) error {
 	var required []string
 	switch Gateway(v) {
 	case Gluetun:
@@ -196,7 +198,7 @@ func configure(e *app.Env) error {
 	}
 	v.Set("VPN_SERVICE_PROVIDER", provider)
 	v.Set("VPN_TYPE", "openvpn")
-	v.SetDefault("VPN_SERVER_COUNTRIES", "")
+	v.SetDefault(countriesKey, "")
 	if v.Has("VPN_OPENVPN_USER") && v.Has("VPN_OPENVPN_PASSWORD") {
 		return nil
 	}
@@ -289,33 +291,43 @@ If the Tailscale gateway later restarts, qBittorrent remains blocked but may nee
 	}
 }
 
-// derive generates Gluetun's API keys and copies the country chosen on the
-// VPN country page into the values Gluetun starts with.
-func derive(v *settings.Values) {
+// derive generates Gluetun's API keys.
+func derive(v app.Values) {
 	if Gateway(v) != Gluetun {
 		return
 	}
 	for _, key := range []string{"GLUETUN_API_KEY", "GLUETUN_CONTROL_KEY"} {
 		if !v.Has(key) {
-			v.Set(key, randomToken())
+			v.Set(key, app.RandomToken(32))
 		}
 	}
-	ApplySavedCountry(v)
 }
 
-func randomToken() string {
-	bytes := make([]byte, 32)
-	rand.Read(bytes)
-	return base64.RawURLEncoding.EncodeToString(bytes)
+// prepare copies the country chosen on the VPN country page into the values
+// Gluetun starts with, and writes Gluetun's API access file.
+func prepare(e *app.Env) ([]string, error) {
+	if Gateway(e.Values) != Gluetun {
+		return nil, nil
+	}
+	if ApplySavedCountry(e.Values, e.ConfigDir()) {
+		if err := e.SaveValues(); err != nil {
+			return nil, err
+		}
+	}
+	changed, err := WriteGluetunAuth(e.ConfigDir(), e.Values)
+	if err != nil || !changed {
+		return nil, err
+	}
+	return []string{Gluetun}, nil
 }
 
 // ApplySavedCountry copies the VPN country page's saved selection into
 // VPN_SERVER_COUNTRIES. It reports whether the value changed.
-func ApplySavedCountry(v *settings.Values) bool {
+func ApplySavedCountry(v app.Values, configDir string) bool {
 	if Gateway(v) != Gluetun {
 		return false
 	}
-	content, err := os.ReadFile(filepath.Join(v.Get("CONFIG_DIR"), countryPage, "selection.json"))
+	content, err := os.ReadFile(filepath.Join(configDir, countryPage, "selection.json"))
 	if err != nil {
 		return false
 	}
@@ -332,16 +344,16 @@ func ApplySavedCountry(v *settings.Values) bool {
 		}
 	}
 	selected := strings.Join(countries, ",")
-	if v.Get("VPN_SERVER_COUNTRIES") == selected {
+	if v.Get(countriesKey) == selected {
 		return false
 	}
-	v.Set("VPN_SERVER_COUNTRIES", selected)
+	v.Set(countriesKey, selected)
 	return true
 }
 
 // WriteGluetunAuth gives Homepage read access and the country page control
 // access to Gluetun's API. It reports whether the file changed.
-func WriteGluetunAuth(configDir string, v *settings.Values) (bool, error) {
+func WriteGluetunAuth(configDir string, v app.Values) (bool, error) {
 	roles := []struct {
 		name   string
 		routes []string
@@ -357,7 +369,7 @@ func WriteGluetunAuth(configDir string, v *settings.Values) (bool, error) {
 		key, _ := json.Marshal(role.key)
 		blocks = append(blocks, fmt.Sprintf("[[roles]]\nname = %s\nroutes = %s\nauth = \"apikey\"\napikey = %s\n", name, strings.ReplaceAll(string(routes), `","`, `", "`), key))
 	}
-	return settings.WriteIfChanged(filepath.Join(configDir, "gluetun", "auth", "config.toml"), []byte(strings.Join(blocks, "\n")))
+	return files.WriteIfChanged(filepath.Join(configDir, "gluetun", "auth", "config.toml"), []byte(strings.Join(blocks, "\n")))
 }
 
 // Countries returns the sorted, unique countries that offer OpenVPN servers.
@@ -377,7 +389,7 @@ func Countries(servers []map[string]any) []string {
 
 // SaveCountryList asks Gluetun for its server list and saves the countries
 // the VPN country page offers. Failures leave the previous list in place.
-func SaveCountryList(s shell.Shell, v *settings.Values) {
+func SaveCountryList(s shell.Shell, v app.Values, configDir string) {
 	flag := "-" + strings.ReplaceAll(v.Get("VPN_SERVICE_PROVIDER"), " ", "-")
 	result, err := shell.Capture(s, "docker", "exec", Gluetun, "sh", "-c",
 		"/gluetun-entrypoint format-servers "+shellQuote(flag)+" -format json -output /tmp/servers.json >/dev/null && cat /tmp/servers.json")
@@ -389,10 +401,7 @@ func SaveCountryList(s shell.Shell, v *settings.Values) {
 		return
 	}
 	content, _ := json.Marshal(Countries(servers))
-	path := filepath.Join(v.Get("CONFIG_DIR"), countryPage, "countries.json")
-	if os.MkdirAll(filepath.Dir(path), 0o755) == nil {
-		os.WriteFile(path, content, 0o644)
-	}
+	files.WriteIfChanged(filepath.Join(configDir, countryPage, "countries.json"), content)
 }
 
 func shellQuote(value string) string {
@@ -400,53 +409,64 @@ func shellQuote(value string) string {
 }
 
 // Ready reports whether the gateway carries traffic: Gluetun is healthy, or
-// the Tailscale exit node is online.
-func Ready(s shell.Shell, gateway string) bool {
+// the Tailscale exit node is online. It fails only when a command cannot run.
+func Ready(s shell.Shell, gateway string) (bool, error) {
 	if gateway == Gluetun {
 		result, err := shell.Capture(s, "docker", "inspect", Gluetun, "--format", "{{.State.Health.Status}}")
-		return err == nil && result.Code == 0 && strings.TrimSpace(result.Stdout) == "healthy"
+		return err == nil && result.Code == 0 && strings.TrimSpace(result.Stdout) == "healthy", err
 	}
 	result, err := shell.Capture(s, "docker", "exec", Tailscale, "tailscale", "status", "--json")
 	if err != nil || result.Code != 0 {
-		return false
+		return false, err
 	}
 	var status struct {
 		ExitNodeStatus struct{ Online bool }
 	}
-	return json.Unmarshal([]byte(result.Stdout), &status) == nil && status.ExitNodeStatus.Online
+	return json.Unmarshal([]byte(result.Stdout), &status) == nil && status.ExitNodeStatus.Online, nil
 }
 
-// Sleep is replaced by tests.
-var Sleep = time.Sleep
-
-// WaitUntilReady waits without a time limit, reporting the wait once.
-func WaitUntilReady(s shell.Shell, v *settings.Values, say func(string)) {
-	gateway := Gateway(v)
-	if Ready(s, gateway) {
-		return
+// WaitUntilReady waits without a time limit, reporting the wait once. It
+// stops when a command cannot run, such as after a cancellation.
+func WaitUntilReady(e *app.Env) error {
+	gateway := Gateway(e.Values)
+	ready, err := Ready(e.Shell, gateway)
+	if err != nil || ready {
+		return err
 	}
-	say("Waiting for the VPN connection. qBittorrent and Prowlarr will start when it connects.")
-	for !Ready(s, gateway) {
-		Sleep(2 * time.Second)
+	e.UI.Say("Waiting for the VPN connection. qBittorrent and Prowlarr will start when it connects.")
+	for {
+		e.Sleep(2 * time.Second)
+		if ready, err := Ready(e.Shell, gateway); err != nil || ready {
+			return err
+		}
 	}
 }
 
 // Status describes the gateway's connection.
-func Status(s shell.Shell, v *settings.Values) (string, error) {
+func Status(e *app.Env) (string, error) {
+	v := e.Values
 	switch Gateway(v) {
 	case Gluetun:
+		ready, err := Ready(e.Shell, Gluetun)
+		if err != nil {
+			return "", err
+		}
 		state := "not healthy"
-		if Ready(s, Gluetun) {
+		if ready {
 			state = "healthy"
 		}
 		text := "Gluetun VPN: " + state
-		if v.Has("VPN_SERVER_COUNTRIES") {
-			text += "\nSelected countries:\n" + v.Get("VPN_SERVER_COUNTRIES")
+		if v.Has(countriesKey) {
+			text += "\nSelected countries:\n" + v.Get(countriesKey)
 		}
 		return text, nil
 	case Tailscale:
+		ready, err := Ready(e.Shell, Tailscale)
+		if err != nil {
+			return "", err
+		}
 		state := "not online"
-		if Ready(s, Tailscale) {
+		if ready {
 			state = "online"
 		}
 		return "Tailscale exit node: " + state + "\nSelected exit node:\n" + v.Get("TAILSCALE_EXIT_NODE"), nil

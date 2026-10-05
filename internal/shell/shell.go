@@ -81,6 +81,9 @@ func (s *OS) Run(c Cmd) (Result, error) {
 		command.Stdout, command.Stderr = output, output
 	}
 	err := run()
+	if ctx.Err() != nil {
+		return Result{}, ctx.Err()
+	}
 	result := Result{Stdout: stdout.String(), Stderr: stderr.String()}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {

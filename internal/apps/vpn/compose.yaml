@@ -1,0 +1,66 @@
+services:
+  gluetun:
+    image: qmcgaw/gluetun:latest@sha256:12df8b20528d4cd5e9b6e827d40f2886cf78e53e7e9afc750050648c31183793
+    container_name: gluetun
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      VPN_SERVICE_PROVIDER: "${VPN_SERVICE_PROVIDER:-}"
+      VPN_TYPE: "${VPN_TYPE:-openvpn}"
+      OPENVPN_USER: "${VPN_OPENVPN_USER:-}"
+      OPENVPN_PASSWORD: "${VPN_OPENVPN_PASSWORD:-}"
+      SERVER_COUNTRIES: "${VPN_SERVER_COUNTRIES:-}"
+      OPENVPN_PROTOCOL: udp
+      FIREWALL_INPUT_PORTS: "8080,6881,8000,9696"
+      TZ: "${TZ}"
+    ports:
+      - "6881:6881/tcp"
+      - "6881:6881/udp"
+    volumes:
+      - "${CONFIG_DIR}/gluetun:/gluetun"
+    networks:
+      default:
+        aliases:
+          - qbittorrent
+
+  tailscale-vpn:
+    image: tailscale/tailscale:latest@sha256:2667499ed87ae29218f292556ba062918402dd5e92e93637af14867e4df12dd3
+    container_name: tailscale-vpn
+    hostname: media-stack-qbittorrent
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      TS_AUTHKEY: "${TAILSCALE_AUTH_KEY:-}"
+      TS_AUTH_ONCE: "true"
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "false"
+      TS_EXTRA_ARGS: "--exit-node=${TAILSCALE_EXIT_NODE:-} --exit-node-allow-lan-access=true"
+    ports:
+      - "6881:6881/tcp"
+      - "6881:6881/udp"
+    volumes:
+      - "${CONFIG_DIR}/tailscale:/var/lib/tailscale"
+    networks:
+      default:
+        aliases:
+          - qbittorrent
+
+  vpn-country:
+    build: ./compose/vpn/countrypage
+    image: media-stack/vpn-country
+    pull_policy: build
+    container_name: vpn-country
+    user: "${PUID}:${PGID}"
+    restart: unless-stopped
+    environment:
+      GLUETUN_CONTROL_KEY: "${GLUETUN_CONTROL_KEY:-}"
+      TZ: "${TZ}"
+    volumes:
+      - "${CONFIG_DIR}/vpn-country:/data"

@@ -5,12 +5,12 @@ package recyclarr
 import (
 	"embed"
 	"errors"
-	"os"
 	"time"
 
 	"github.com/inayayousfi/legal-stuff/internal/app"
 	"github.com/inayayousfi/legal-stuff/internal/apps/radarr"
 	"github.com/inayayousfi/legal-stuff/internal/apps/sonarr"
+	"github.com/inayayousfi/legal-stuff/internal/files"
 	"github.com/inayayousfi/legal-stuff/internal/shell"
 )
 
@@ -30,32 +30,31 @@ var App = &app.App{
 
 // Sync writes the profile configuration, waits for Sonarr and Radarr, and applies it.
 func Sync(e *app.Env) error {
-	if err := os.WriteFile(e.ConfigPath("recyclarr", "recyclarr.yml"), config, 0o644); err != nil {
+	if _, err := files.WriteIfChanged(e.ConfigPath("recyclarr", "recyclarr.yml"), config); err != nil {
 		return err
 	}
-	if err := waitForAPI(e.Shell, "sonarr-app", "Sonarr", "http://localhost:8989/sonarr/api/v3/system/status", e.Values.Get(sonarr.KeyName)); err != nil {
+	if err := waitForAPI(e, "sonarr-app", "Sonarr", "http://localhost:8989/sonarr/api/v3/system/status", sonarr.APIKey(e.Values)); err != nil {
 		return err
 	}
-	if err := waitForAPI(e.Shell, "radarr-app", "Radarr", "http://localhost:7878/radarr/api/v3/system/status", e.Values.Get(radarr.KeyName)); err != nil {
+	if err := waitForAPI(e, "radarr-app", "Radarr", "http://localhost:7878/radarr/api/v3/system/status", radarr.APIKey(e.Values)); err != nil {
 		return err
 	}
 	return e.Compose("run", "--rm", "recyclarr", "sync")
 }
 
-// Sleep is replaced by tests.
-var Sleep = time.Sleep
+// apiChecks is how many times waitForAPI checks, 2 seconds apart: three minutes.
+const apiChecks = 90
 
-func waitForAPI(s shell.Shell, service, name, url, apiKey string) error {
-	deadline := time.Now().Add(3 * time.Minute)
-	for time.Now().Before(deadline) {
-		result, err := shell.ComposeCapture(s, "exec", "-T", service, "curl", "-fsS", "-o", "/dev/null", "-H", "X-Api-Key: "+apiKey, url)
+func waitForAPI(e *app.Env, service, name, url, apiKey string) error {
+	for range apiChecks {
+		result, err := shell.ComposeCapture(e.Shell, "exec", "-T", service, "curl", "-fsS", "-o", "/dev/null", "-H", "X-Api-Key: "+apiKey, url)
 		if err != nil {
 			return err
 		}
 		if result.Code == 0 {
 			return nil
 		}
-		Sleep(2 * time.Second)
+		e.Sleep(2 * time.Second)
 	}
 	return errors.New(name + " did not become ready within three minutes.")
 }

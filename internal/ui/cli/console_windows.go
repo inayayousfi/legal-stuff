@@ -1,4 +1,4 @@
-package platform
+package cli
 
 import (
 	"os"
@@ -6,9 +6,9 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// RestoreConsoleInput turns line input, echo, and Ctrl+C handling back on,
+// restoreConsoleInput turns line input, echo, and Ctrl+C handling back on,
 // in case an earlier program left the Windows console in raw mode.
-func RestoreConsoleInput() {
+func restoreConsoleInput() {
 	handle := windows.Handle(os.Stdin.Fd())
 	var mode uint32
 	if windows.GetConsoleMode(handle, &mode) != nil {

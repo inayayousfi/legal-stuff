@@ -1,6 +1,8 @@
 package stack
 
 import (
+	"errors"
+	"flag"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -10,7 +12,6 @@ import (
 	"time"
 
 	"github.com/inayayousfi/legal-stuff/internal/apps"
-	"github.com/inayayousfi/legal-stuff/internal/apps/recyclarr"
 	"github.com/inayayousfi/legal-stuff/internal/apps/vpn"
 	"github.com/inayayousfi/legal-stuff/internal/fake"
 	"github.com/inayayousfi/legal-stuff/internal/flow"
@@ -22,7 +23,6 @@ const (
 	sonarrKey   = "0123456789abcdef0123456789abcdef"
 	radarrKey   = "fedcba9876543210fedcba9876543210"
 	jellyfinKey = "00112233445566778899aabbccddeeff"
-	adminHash   = "$2a$10$" + "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0"
 )
 
 // dockerHost answers like a working Docker host whose VPN connects at once.
@@ -35,8 +35,6 @@ func dockerHost(subnet string) func([]string) shell.Result {
 				return shell.Result{Code: 1}
 			}
 			return shell.Result{Stdout: subnet + " \n"}
-		case strings.Contains(line, "tinyauth user create"):
-			return shell.Result{Stdout: "\x1b[32mUser\x1b[0m admin:" + adminHash + "\n"}
 		case strings.HasPrefix(line, "docker inspect gluetun"):
 			return shell.Result{Stdout: "healthy\n"}
 		case strings.HasPrefix(line, "docker exec gluetun"):
@@ -57,8 +55,6 @@ func newTestStack(t *testing.T, ui flow.UI, sh *fake.Shell) *Stack {
 	t.Setenv("PATH", bin)
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("USER", "tester")
-	recyclarr.Sleep = func(time.Duration) {}
-	vpn.Sleep = func(time.Duration) {}
 	return &Stack{Root: t.TempDir(), Apps: apps.All, Shell: sh, UI: ui, Program: "/opt/selfhost/selfhost", Sleep: func(time.Duration) {}}
 }
 
@@ -127,7 +123,7 @@ func TestSetupGuidesEveryAppInOrderAndSavesValues(t *testing.T) {
 		"ACCESS_MODE":          "domain",
 		"ADMIN_ACCESS_HOST":    "media.example.com",
 		"ACCESS_URL":           "https://media.example.com",
-		"TINYAUTH_USERS":       "admin:" + adminHash,
+		"ADMIN_USER":           "admin",
 		"SONARR_API_KEY":       sonarrKey,
 		"RADARR_API_KEY":       radarrKey,
 		"JELLYFIN_API_KEY":     jellyfinKey,
@@ -150,7 +146,7 @@ func TestSetupGuidesEveryAppInOrderAndSavesValues(t *testing.T) {
 			order = append(order, strings.TrimPrefix(event, "screen: "))
 		}
 	}
-	wantOrder := []string{"VPN kill-switch setup", "qBittorrent setup", "Sonarr setup", "Radarr setup", "Prowlarr setup", "Jellyfin setup", "Seerr setup"}
+	wantOrder := []string{"VPN kill-switch setup", "qBittorrent setup", "Sonarr setup", "Radarr setup", "Prowlarr setup", "Authentik setup", "Jellyfin setup", "Seerr setup"}
 	if !slices.Equal(order, wantOrder) {
 		t.Errorf("guide order = %v, want %v", order, wantOrder)
 	}
@@ -250,7 +246,7 @@ func TestStartWaitsForTheGatewayBeforeVPNServices(t *testing.T) {
 		t.Errorf("order stop=%d up=%d ready=%d vpnUp=%d sync=%d\n%s", stop, up, ready, vpnUp, sync, strings.Join(sh.Lines(), "\n"))
 	}
 	upLine := sh.Lines()[up]
-	for _, service := range []string{"gluetun", "vpn-country", "caddy", "tinyauth", "homepage", "jellyfin-app", "seerr", "sonarr-app", "radarr-app"} {
+	for _, service := range []string{"gluetun", "vpn-country", "caddy", "authentik-db", "authentik-server", "authentik-worker", "homepage", "jellyfin-app", "seerr", "sonarr-app", "radarr-app"} {
 		if !strings.Contains(upLine, " "+service) {
 			t.Errorf("%q does not start %s", upLine, service)
 		}
@@ -319,10 +315,145 @@ func TestVPNStatusReportsHealthAndCountries(t *testing.T) {
 	values := readEnv(t, s)
 	values.Set("VPN_SERVER_COUNTRIES", "Spain")
 	settings.Write(s.envFile(), values)
-	if err := s.VPNStatus(); err != nil {
+	if err := s.AppStatus(vpn.App); err != nil {
 		t.Fatal(err)
 	}
 	if got := ui.Events[len(ui.Events)-1]; got != "say: Gluetun VPN: healthy\nSelected countries:\nSpain" {
 		t.Errorf("status = %q", got)
+	}
+}
+
+// A start that fails after stopping qBittorrent and Prowlarr says they stay stopped.
+func TestFailedStartNamesTheServicesItLeftStopped(t *testing.T) {
+	s, sh, _ := startedStack(t, "172.31.250.0/24")
+	ready := sh.Respond
+	sh.Respond = func(args []string) shell.Result {
+		if strings.HasPrefix(strings.Join(args, " "), "docker compose up -d --no-deps --remove-orphans") {
+			return shell.Result{Code: 1}
+		}
+		return ready(args)
+	}
+	err := s.Start()
+	var stopped *StoppedError
+	if !errors.As(err, &stopped) || !slices.Equal(stopped.Services, []string{"qbittorrent", "prowlarr"}) {
+		t.Fatalf("err = %v", err)
+	}
+	if !strings.HasSuffix(err.Error(), "\nStopped until the next successful start: qbittorrent, prowlarr") {
+		t.Errorf("message = %q", err.Error())
+	}
+}
+
+// Containers reach Sonarr, Radarr, Prowlarr, and Jellyfin by name through Caddy.
+func TestCaddyAnswersForTheInternalNames(t *testing.T) {
+	s, _, _ := startedStack(t, "")
+	content, err := os.ReadFile(filepath.Join(s.Root, "compose", "caddy", "compose.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "        aliases:\n          - sonarr\n          - radarr\n          - prowlarr\n          - jellyfin\n"
+	if !strings.Contains(string(content), want) {
+		t.Errorf("caddy fragment:\n%s", content)
+	}
+}
+
+// Values saved by earlier versions under old names reach the current names at setup.
+func TestSetupMovesRenamedSettings(t *testing.T) {
+	sh := &fake.Shell{Respond: dockerHost("")}
+	ui := &fake.UI{}
+	s := newTestStack(t, ui, sh)
+	ui.Answers = setupAnswers(filepath.Join(t.TempDir(), "Media"))
+	if err := os.WriteFile(s.envFile(), []byte("JELLYFIN_USER=\"jelly\"\nJELLYFIN_PASS=secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Setup(); err != nil {
+		t.Fatal(err)
+	}
+	content, _ := os.ReadFile(s.envFile())
+	values := readEnv(t, s)
+	if values.Get("JELLYFIN_ADMIN_USER") != "jelly" || values.Get("JELLYFIN_ADMIN_PASS") != "secret" || strings.Contains(string(content), "JELLYFIN_USER=") {
+		t.Errorf(".env:\n%s", content)
+	}
+}
+
+var update = flag.Bool("update", false, "rewrite .env.example from the apps")
+
+// .env.example lists every setting the apps declare, so it changes with them.
+func TestEnvExampleMatchesTheApps(t *testing.T) {
+	path := filepath.Join("..", "..", ".env.example")
+	want := ExampleEnv(apps.All)
+	if *update {
+		if err := os.WriteFile(path, []byte(want), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	content, err := os.ReadFile(path)
+	if err != nil || string(content) != want {
+		t.Errorf(".env.example is stale; run: go test ./internal/stack -run TestEnvExampleMatchesTheApps -update")
+	}
+}
+
+// Each setting has one owner, so only that app can change it.
+func TestEverySettingHasOneOwner(t *testing.T) {
+	owners := map[string]string{}
+	for _, setting := range coreSettings {
+		owners[setting.Key] = "stack"
+	}
+	for _, a := range apps.All {
+		for _, setting := range a.Settings {
+			if owner, ok := owners[setting.Key]; ok {
+				t.Errorf("%s is owned by both %s and %s", setting.Key, owner, a.Name)
+			}
+			owners[setting.Key] = a.Name
+		}
+		for _, current := range a.Renamed {
+			if !a.Owns(current) {
+				t.Errorf("%s renames into %s, which it does not own", a.Name, current)
+			}
+		}
+	}
+	for _, a := range apps.All {
+		for _, key := range a.RetiredSettings {
+			if owner, ok := owners[key]; ok {
+				t.Errorf("%s retires %s, which %s still owns", a.Name, key, owner)
+			}
+		}
+	}
+}
+
+// An install upgraded from Tinyauth loses its leftovers at the next start.
+func TestStartRemovesWhatTinyauthLeftBehind(t *testing.T) {
+	s, _, _ := startedStack(t, "172.31.250.0/24")
+	values := readEnv(t, s)
+	values.Set("TINYAUTH_USERS", "admin:hash")
+	values.Set("ADMIN_LOGIN_FINGERPRINT", "abc")
+	if err := settings.Write(s.envFile(), values); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(values.Get("CONFIG_DIR"), "tinyauth")
+	if err := os.MkdirAll(old, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if after := readEnv(t, s); after.Has("TINYAUTH_USERS") || after.Has("ADMIN_LOGIN_FINGERPRINT") {
+		t.Errorf("Tinyauth values kept: %v", after.Keys())
+	}
+	if _, err := os.Stat(old); err == nil {
+		t.Error("config/tinyauth kept")
+	}
+}
+
+func TestSignInTextListsTheRegistryApps(t *testing.T) {
+	sh := &fake.Shell{Respond: dockerHost("")}
+	ui := &fake.UI{}
+	s := newTestStack(t, ui, sh)
+	ui.Answers = setupAnswers(filepath.Join(t.TempDir(), "Media"))
+	if err := s.Setup(); err != nil {
+		t.Fatal(err)
+	}
+	want := "They protect qBittorrent, Sonarr, Radarr, Prowlarr, and VPN country page, which no longer ask for their own logins. Jellyfin and Seerr keep their own logins."
+	if !strings.Contains(ui.Text(), want) {
+		t.Errorf("sign-in text missing; guides:\n%s", ui.Text())
 	}
 }

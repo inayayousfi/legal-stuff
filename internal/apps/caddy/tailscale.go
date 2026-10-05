@@ -1,6 +1,7 @@
-// Package platform runs the host commands that depend on the operating
-// system: Tailscale on the host, automatic start, and console handling.
-package platform
+package caddy
+
+// This file runs the Tailscale commands on the host that Tailscale mode uses
+// for the address and its HTTPS certificate.
 
 import (
 	"encoding/json"
@@ -12,14 +13,14 @@ import (
 	"github.com/inayayousfi/legal-stuff/internal/shell"
 )
 
-// TailscaleServeConflict explains why Tailscale Serve blocks the stack.
-const TailscaleServeConflict = "Tailscale Serve already uses HTTPS port 443 on this computer, so the stack cannot use it. " +
+// tailscaleServeConflict explains why Tailscale Serve blocks the stack.
+const tailscaleServeConflict = "Tailscale Serve already uses HTTPS port 443 on this computer, so the stack cannot use it. " +
 	"Remove the existing Tailscale Serve configuration with this command:\n" +
 	"tailscale serve reset"
 
-// TailscaleDNSName returns this computer's Tailscale name, or "" when Tailscale
+// tailscaleDNSName returns this computer's Tailscale name, or "" when Tailscale
 // is missing or signed out.
-func TailscaleDNSName(s shell.Shell) string {
+func tailscaleDNSName(s shell.Shell) string {
 	tailscale, ok := shell.Found("tailscale")
 	if !ok {
 		return ""
@@ -35,8 +36,8 @@ func TailscaleDNSName(s shell.Shell) string {
 	return strings.TrimSuffix(status.Self.DNSName, ".")
 }
 
-// TailscaleServeUsesHTTPS reports whether Tailscale Serve already holds port 443.
-func TailscaleServeUsesHTTPS(s shell.Shell) bool {
+// tailscaleServeUsesHTTPS reports whether Tailscale Serve already holds port 443.
+func tailscaleServeUsesHTTPS(s shell.Shell) bool {
 	tailscale, ok := shell.Found("tailscale")
 	if !ok {
 		return false
@@ -53,9 +54,9 @@ func TailscaleServeUsesHTTPS(s shell.Shell) bool {
 	return used
 }
 
-// GrantTailscaleOperator lets the current Linux user fetch certificates. It
+// grantTailscaleOperator lets the current Linux user fetch certificates. It
 // does nothing on other systems.
-func GrantTailscaleOperator(s shell.Shell, say func(string)) error {
+func grantTailscaleOperator(s shell.Shell, say func(string)) error {
 	if runtime.GOOS != "linux" {
 		return nil
 	}
@@ -72,15 +73,15 @@ func GrantTailscaleOperator(s shell.Shell, say func(string)) error {
 	return err
 }
 
-// TailscaleCert writes the HTTPS certificate for host and reports whether
+// tailscaleCert writes the HTTPS certificate for host and reports whether
 // either file changed.
-func TailscaleCert(s shell.Shell, certFile, keyFile, host string) (bool, error) {
+func tailscaleCert(s shell.Shell, certFile, keyFile, host string) (bool, error) {
 	tailscale, ok := shell.Found("tailscale")
 	if !ok {
 		return false, errors.New("Tailscale is not installed, so the HTTPS certificate cannot be renewed.")
 	}
-	if TailscaleServeUsesHTTPS(s) {
-		return false, errors.New(TailscaleServeConflict)
+	if tailscaleServeUsesHTTPS(s) {
+		return false, errors.New(tailscaleServeConflict)
 	}
 	before := [2]string{readOrEmpty(certFile), readOrEmpty(keyFile)}
 	result, err := shell.Capture(s, tailscale, "cert", "--cert-file", certFile, "--key-file", keyFile, host)

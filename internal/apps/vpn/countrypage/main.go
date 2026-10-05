@@ -293,12 +293,12 @@ func (p *page) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			p.send(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if err := p.applyCountries(countries); err != nil {
-			p.send(w, http.StatusBadGateway, "Gluetun did not accept the change: "+err.Error())
+		if err := p.saveCountries(countries); err != nil {
+			p.send(w, http.StatusInternalServerError, "The choice could not be saved, so the connection is unchanged: "+err.Error())
 			return
 		}
-		if err := p.saveCountries(countries); err != nil {
-			p.send(w, http.StatusBadGateway, "Gluetun did not accept the change: "+err.Error())
+		if err := p.applyCountries(countries); err != nil {
+			p.send(w, http.StatusBadGateway, "The choice is saved and will apply when Gluetun accepts it: "+err.Error())
 			return
 		}
 		target := "any country"

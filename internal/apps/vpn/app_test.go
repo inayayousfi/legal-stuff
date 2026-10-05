@@ -1,6 +1,8 @@
 package vpn
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -8,10 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inayayousfi/legal-stuff/internal/app"
 	"github.com/inayayousfi/legal-stuff/internal/fake"
 	"github.com/inayayousfi/legal-stuff/internal/settings"
 	"github.com/inayayousfi/legal-stuff/internal/shell"
 )
+
+func newValues() app.Values { return app.ValuesFor(settings.NewValues(), App) }
 
 func TestCountriesKeepUniqueOpenVPNCountries(t *testing.T) {
 	servers := []map[string]any{
@@ -27,28 +32,28 @@ func TestCountriesKeepUniqueOpenVPNCountries(t *testing.T) {
 }
 
 func TestSavedCountryIsCopiedIntoValues(t *testing.T) {
-	values := settings.NewValues()
-	values.Set("CONFIG_DIR", t.TempDir())
+	values := newValues()
+	configDir := t.TempDir()
 	values.Set(gatewayKey, Gluetun)
-	path := filepath.Join(values.Get("CONFIG_DIR"), countryPage, "selection.json")
+	path := filepath.Join(configDir, countryPage, "selection.json")
 	os.MkdirAll(filepath.Dir(path), 0o755)
 	os.WriteFile(path, []byte(`{"countries": ["Spain", 3]}`), 0o644)
-	if !ApplySavedCountry(values) || values.Get("VPN_SERVER_COUNTRIES") != "Spain" {
+	if !ApplySavedCountry(values, configDir) || values.Get("VPN_SERVER_COUNTRIES") != "Spain" {
 		t.Errorf("countries = %q", values.Get("VPN_SERVER_COUNTRIES"))
 	}
-	if ApplySavedCountry(values) {
+	if ApplySavedCountry(values, configDir) {
 		t.Error("an unchanged country was reported as changed")
 	}
 	values.Set(gatewayKey, Tailscale)
 	os.WriteFile(path, []byte(`{"countries": ["Chile"]}`), 0o644)
-	if ApplySavedCountry(values) {
+	if ApplySavedCountry(values, configDir) {
 		t.Error("a country was applied to the Tailscale gateway")
 	}
 }
 
 func TestGluetunAccessFileReportsOnlyRealChanges(t *testing.T) {
 	dir := t.TempDir()
-	values := settings.NewValues()
+	values := newValues()
 	values.Set("GLUETUN_API_KEY", "read")
 	values.Set("GLUETUN_CONTROL_KEY", "control")
 	if changed, _ := WriteGluetunAuth(dir, values); !changed {
@@ -76,7 +81,7 @@ apikey = "control"
 }
 
 func TestValidationDependsOnTheGateway(t *testing.T) {
-	values := settings.NewValues()
+	values := newValues()
 	values.Set(gatewayKey, Tailscale)
 	values.Set("TAILSCALE_AUTH_KEY", "key")
 	if err := validate(values); err == nil || err.Error() != "Missing required VPN values: TAILSCALE_EXIT_NODE" {
@@ -94,7 +99,7 @@ func TestValidationDependsOnTheGateway(t *testing.T) {
 }
 
 func TestTailscaleGatewayRunsWithoutTheCountryPage(t *testing.T) {
-	values := settings.NewValues()
+	values := newValues()
 	values.Set(gatewayKey, Tailscale)
 	if got := App.Services(values); !slices.Equal(got, []string{Tailscale}) {
 		t.Errorf("services = %v", got)
@@ -107,8 +112,11 @@ func TestTailscaleGatewayRunsWithoutTheCountryPage(t *testing.T) {
 	}
 }
 
+func waitEnv(sh shell.Shell, values app.Values, ui *fake.UI) *app.Env {
+	return &app.Env{Values: values, Shell: sh, UI: ui, Sleep: func(time.Duration) {}}
+}
+
 func TestWaitHasNoTimeLimitAndReportsOnce(t *testing.T) {
-	Sleep = func(time.Duration) {}
 	calls := 0
 	sh := &fake.Shell{Respond: func([]string) shell.Result {
 		calls++
@@ -117,28 +125,41 @@ func TestWaitHasNoTimeLimitAndReportsOnce(t *testing.T) {
 		}
 		return shell.Result{Stdout: "healthy"}
 	}}
-	values := settings.NewValues()
+	values := newValues()
 	values.Set(gatewayKey, Gluetun)
-	var said []string
-	WaitUntilReady(sh, values, func(s string) { said = append(said, s) })
-	if calls != 50 || len(said) != 1 {
-		t.Errorf("calls = %d, messages = %v", calls, said)
+	ui := &fake.UI{}
+	if err := WaitUntilReady(waitEnv(sh, values, ui)); err != nil || calls != 50 || len(ui.Events) != 1 {
+		t.Errorf("err = %v, calls = %d, messages = %v", err, calls, ui.Events)
 	}
-	said = nil
-	WaitUntilReady(sh, values, func(s string) { said = append(said, s) })
-	if len(said) != 0 {
-		t.Errorf("a ready gateway printed %v", said)
+	ui.Events = nil
+	WaitUntilReady(waitEnv(sh, values, ui))
+	if len(ui.Events) != 0 {
+		t.Errorf("a ready gateway printed %v", ui.Events)
 	}
 }
 
+// A cancelled command ends the wait instead of polling forever.
+func TestWaitStopsWhenACommandCannotRun(t *testing.T) {
+	values := newValues()
+	values.Set(gatewayKey, Gluetun)
+	sh := failingShell{}
+	if err := WaitUntilReady(waitEnv(sh, values, &fake.UI{})); !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v", err)
+	}
+}
+
+type failingShell struct{}
+
+func (failingShell) Run(shell.Cmd) (shell.Result, error) { return shell.Result{}, context.Canceled }
+
 func TestTailscaleStatusReportsAnOfflineExitNode(t *testing.T) {
-	values := settings.NewValues()
+	values := newValues()
 	values.Set(gatewayKey, Tailscale)
 	values.Set("TAILSCALE_EXIT_NODE", "exit-1")
 	sh := &fake.Shell{Respond: func([]string) shell.Result {
 		return shell.Result{Stdout: `{"ExitNodeStatus": {"Online": false}}`}
 	}}
-	text, err := Status(sh, values)
+	text, err := Status(&app.Env{Values: values, Shell: sh})
 	if err != nil || text != "Tailscale exit node: not online\nSelected exit node:\nexit-1" {
 		t.Errorf("text = %q, err = %v", text, err)
 	}

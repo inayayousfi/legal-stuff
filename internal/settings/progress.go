@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"slices"
+
+	"github.com/inayayousfi/legal-stuff/internal/files"
 )
 
 // Progress records which guided setup steps are finished, so an interrupted
@@ -52,5 +54,5 @@ func (p *Progress) Complete(step string) error {
 	if err != nil {
 		return err
 	}
-	return WriteFileAtomic(p.path, append(content, '\n'), 0o644)
+	return files.WriteAtomic(p.path, append(content, '\n'), 0o644)
 }

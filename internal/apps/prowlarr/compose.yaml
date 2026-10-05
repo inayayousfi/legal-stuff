@@ -1,0 +1,14 @@
+services:
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest@sha256:1295cff29d10b486c0d8324d1559a552140a5932bf8b3d87e398654414f63f92
+    container_name: prowlarr
+    restart: unless-stopped
+    environment:
+      PUID: "${PUID}"
+      PGID: "${PGID}"
+      TZ: "${TZ}"
+      PROWLARR__SERVER__URLBASE: /prowlarr
+      PROWLARR__AUTH__METHOD: External
+    network_mode: "service:${VPN_GATEWAY_SERVICE}"
+    volumes:
+      - "${CONFIG_DIR}/prowlarr:/config"

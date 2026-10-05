@@ -59,7 +59,7 @@ func TestPasswordRequiresAMatchingRepeat(t *testing.T) {
 	if answers["pass"] != "secret" {
 		t.Errorf("password = %q", answers["pass"])
 	}
-	for _, line := range []string{"Password cannot be empty.", "Passwords do not match.", "Repeat Admin password: "} {
+	for _, line := range []string{"Error: Password cannot be empty.", "Error: Passwords do not match.", "Repeat Admin password: "} {
 		if !strings.Contains(out, line) {
 			t.Errorf("output lacks %q: %q", line, out)
 		}

@@ -12,7 +12,7 @@ The setup supports Windows with Docker Desktop and native Linux.
 | --- | --- | --- |
 | Homepage | Links, container status, VPN status and Docker resource overview | `ADDRESS/` |
 | Caddy | Reverse proxy, HTTPS, and the single entry point for every web page | No web interface |
-| Tinyauth | Admin sign-in page shared by the administration pages | `ADDRESS:9091` |
+| Authentik | Admin sign-in for the administration pages, and the place to add sign-in methods such as Google accounts | `ADDRESS:9091` |
 | Docker socket proxy | Read-only container status for Homepage | No web interface |
 | Gluetun or Tailscale | Selectable qBittorrent VPN gateway | No web interface |
 | Jellyfin | Media server | `ADDRESS/jellyfin` |
@@ -37,6 +37,8 @@ Tailscale mode requires that Tailscale Serve does not already use HTTPS port `44
 Caddy publishes ports `80`, `443`, `5055` (Seerr), and `9091` (sign-in). The other web interfaces no longer publish their own ports. In own-domain mode, forward TCP ports `80`, `443`, `5055`, and `9091` from the router to this computer.
 
 One admin username and password protect qBittorrent, Sonarr, Radarr, Prowlarr, and the VPN country page. Those applications no longer ask for their own logins: Sonarr, Radarr, and Prowlarr use their `External` authentication method, and qBittorrent skips its login for the stack's Docker network (`172.31.250.0/24`). Jellyfin and Seerr keep their own logins, because Jellyfin's phone and TV applications cannot pass the admin sign-in and Seerr is meant for the people who request media.
+
+Authentik checks the admin sign-in. Its database runs in its own PostgreSQL container and is stored in the Docker volume `media-stack_authentik-db`, not under `config/`, because PostgreSQL cannot keep its files in a folder shared with Windows. Back up that volume together with `config/`. Other sign-in methods are added in Authentik's administration pages at `ADDRESS:9091/if/admin/`: Google and other accounts under Directory > Federation and Social login. In local mode the address is unencrypted, so passkeys and Google sign-in cannot work there; setup and Authentik's sign-in page both say so.
 
 Containers keep reaching each other through `sonarr:8989`, `radarr:7878`, `prowlarr:9696`, and `jellyfin:8096`. Those names belong to Caddy, which adds each application's path only when the address lacks it. Saved addresses in Prowlarr, Seerr, Recyclarr, and the Jellyfin notifications therefore need no path.
 
@@ -139,9 +141,9 @@ The program performs these checks and actions:
 5. Shows the pros and cons of the 3 access modes, then requests the mode and its address. Tailscale mode uses this computer's Tailscale name. Own-domain mode requests the domain name. Local mode proposes `MACHINE.local` and accepts another name containing a dot.
 6. Requests the admin username and password that protect the administration pages.
 7. Creates the media and configuration directories.
-8. Writes the initial local `.env` and creates the admin sign-in. In Tailscale mode on Linux, it runs `sudo tailscale set --operator=USER` once, so later starts can renew the certificate without a password, then fetches the certificate.
+8. Writes the initial local `.env` and Authentik's configuration with the admin sign-in. In Tailscale mode on Linux, it runs `sudo tailscale set --operator=USER` once, so later starts can renew the certificate without a password, then fetches the certificate.
 9. Writes Caddy's configuration, Jellyfin's `/jellyfin` base URL, and qBittorrent's login bypass for the stack's Docker network.
-10. Starts the selected VPN gateway, Caddy, Tinyauth, the Docker socket proxy, Homepage, Glances, Jellyfin, Sonarr, Radarr, and Seerr, then starts qBittorrent and Prowlarr once the VPN route is ready.
+10. Starts the selected VPN gateway, Caddy, Authentik and its database, the Docker socket proxy, Homepage, Glances, Jellyfin, Sonarr, Radarr, and Seerr, then starts qBittorrent and Prowlarr once the VPN route is ready.
 11. Shows each application's address and setup steps, starting with the admin sign-in values, and saves progress after each manual step.
 12. Requests the Sonarr and Radarr API keys.
 13. Requests the Jellyfin API key and shows the steps that make Radarr and Sonarr refresh Jellyfin after each import.
@@ -161,7 +163,7 @@ Leading and trailing spaces are removed from the media-directory input. Password
 
 The program prints these instructions during setup.
 
-The first administration page asks for the admin sign-in. One sign-in covers every administration page for 24 hours.
+The first administration page asks for the admin sign-in. One sign-in covers every administration page.
 
 ### qBittorrent
 
@@ -466,7 +468,7 @@ config/
 Media/
 ```
 
-The `.env` file contains the admin sign-in, the Jellyfin administrator login, the VPN credentials, and the Sonarr, Radarr, and Jellyfin API keys. The stack uses the admin sign-in and the VPN credentials directly; the Jellyfin login is a local reference. Do not commit or share this file.
+The `.env` file contains the admin sign-in, Authentik's generated secrets, the Jellyfin administrator login, the VPN credentials, and the Sonarr, Radarr, and Jellyfin API keys. The stack uses the admin sign-in and the VPN credentials directly; the Jellyfin login is a local reference. Do not commit or share this file.
 
 The Recyclarr configuration, `internal/apps/recyclarr/recyclarr.yml`, contains no secrets and is part of the program.
 
@@ -487,7 +489,5 @@ Every web page goes through Caddy. The admin sign-in protects qBittorrent, Sonar
 In own-domain mode, every page is reachable from the internet. In local mode, passwords and pages cross the local network unencrypted.
 
 In Tailscale mode on Linux, setup makes the current user Tailscale's operator, so that user can change Tailscale settings without `sudo`. `start` renews the 90-day certificate; the certificate expires if `start` does not run for that long.
-
-Tinyauth's redirect warnings are disabled because the sign-in page uses its own port. After signing in, Tinyauth returns to any address in the sign-in link without a warning.
 
 Jellyfin does not officially support Docker on Windows or macOS. This does not mean it cannot work, so the setup remains worth trying. Some features, particularly hardware-accelerated transcoding, may still fail on those hosts.

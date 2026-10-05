@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -13,6 +14,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/inayayousfi/legal-stuff/internal/commands"
 	"github.com/inayayousfi/legal-stuff/internal/flow"
 	"github.com/inayayousfi/legal-stuff/internal/stack"
 )
@@ -21,13 +23,11 @@ import (
 // output goes, how a command takes the terminal, and its cancellation.
 type Factory func(ctx context.Context, ui flow.UI, output io.Writer, takeTerminal func(func() error) error) *stack.Stack
 
-// ErrInterrupted reports that the user quit while a command was running.
-var ErrInterrupted = errors.New("Command cancelled.")
-
-// Run shows the menu until the user quits.
-func Run(factory Factory) error {
+// Run shows the menu until the user quits. groups are the credential group
+// names. Quitting while a command runs returns flow.ErrCancelled.
+func Run(factory Factory, groups []string) error {
 	holder := &programHolder{}
-	m := &model{factory: factory, holder: holder}
+	m := &model{factory: factory, holder: holder, groups: groups}
 	program := tea.NewProgram(m)
 	holder.program = program
 	final, err := program.Run()
@@ -35,28 +35,15 @@ func Run(factory Factory) error {
 		return err
 	}
 	if final.(*model).interrupted {
-		return ErrInterrupted
+		return flow.ErrCancelled
 	}
 	return nil
 }
 
 type programHolder struct{ program *tea.Program }
 
-type action struct {
-	label string
-	help  string
-	run   func(s *stack.Stack) error
-}
-
-var actions = []action{
-	{"Setup", "Configure credentials, start the services, apply Recyclarr profiles, and install automatic startup.", (*stack.Stack).Setup},
-	{"Start", "Start the services and synchronize Recyclarr.", (*stack.Stack).Start},
-	{"Stop", "Stop and remove the stack containers.", (*stack.Stack).Stop},
-	{"Status", "Show the current service status.", (*stack.Stack).Status},
-	{"VPN status", "Show the selected VPN gateway and its connection status.", (*stack.Stack).VPNStatus},
-	{"Credentials", "List or change the saved values for one service.", nil},
-	{"Quit", "Leave this interface.", nil},
-}
+// quitEntry is the menu entry after the commands.
+const quitEntry = "Quit"
 
 type view int
 
@@ -72,9 +59,10 @@ type model struct {
 	width   int
 	height  int
 
-	view   view
-	cursor int
-	groups []string
+	view    view
+	cursor  int
+	groups  []string
+	command commands.Command
 
 	title       string
 	log         []string
@@ -173,36 +161,32 @@ func (m *model) menuKey(msg tea.KeyPressMsg) tea.Cmd {
 	if key == "q" || key == "esc" {
 		return tea.Quit
 	}
-	m.cursor = moveCursor(key, m.cursor, len(actions))
+	m.cursor = moveCursor(key, m.cursor, len(commands.All)+1)
 	if key != "enter" {
 		return nil
 	}
-	chosen := actions[m.cursor]
-	switch chosen.label {
-	case "Quit":
+	if m.cursor == len(commands.All) {
 		return tea.Quit
-	case "Credentials":
-		m.groups = nil
-		for _, group := range m.factory(context.Background(), nil, nil, nil).CredentialGroups() {
-			m.groups = append(m.groups, group.Name)
-		}
-		m.view, m.cursor = groupView, 0
+	}
+	chosen := commands.All[m.cursor]
+	if chosen.Group {
+		m.command, m.view, m.cursor = chosen, groupView, 0
 		return nil
 	}
-	m.start(chosen.label, chosen.run)
+	m.start(chosen.Label, func(s *stack.Stack) error { return chosen.Run(s, nil) })
 	return nil
 }
 
 func (m *model) groupKey(msg tea.KeyPressMsg) tea.Cmd {
 	key := msg.String()
 	if key == "esc" || key == "q" {
-		m.view, m.cursor = menuView, len(actions)-2
+		m.view, m.cursor = menuView, slices.IndexFunc(commands.All, func(c commands.Command) bool { return c.Name == m.command.Name })
 		return nil
 	}
 	m.cursor = moveCursor(key, m.cursor, len(m.groups))
 	if key == "enter" {
-		group := m.groups[m.cursor]
-		m.start("Credentials: "+group, func(s *stack.Stack) error { return s.Credentials(group) })
+		group, chosen := m.groups[m.cursor], m.command
+		m.start(chosen.Label+": "+group, func(s *stack.Stack) error { return chosen.Run(s, []string{group}) })
 	}
 	return nil
 }
@@ -342,7 +326,7 @@ func (m *model) answerKey(msg tea.KeyPressMsg) tea.Cmd {
 	if field.Check != nil {
 		checked, err := field.Check(value)
 		if err != nil {
-			a.message = strings.TrimPrefix(err.Error(), "Error: ")
+			a.message = err.Error()
 			a.input.SetValue("")
 			return nil
 		}
@@ -412,22 +396,29 @@ func (m *model) wrap(text string) string {
 func (m *model) menuContent() string {
 	var out strings.Builder
 	out.WriteString(accent.Render(stack.Command) + "\n\n")
-	for i, a := range actions {
+	help := "Leave this interface."
+	for i := range len(commands.All) + 1 {
+		label := quitEntry
+		if i < len(commands.All) {
+			label = commands.All[i].Label
+		}
 		pointer := "  "
-		label := a.label
 		if i == m.cursor {
-			pointer, label = accent.Render("> "), bold.Render(a.label)
+			pointer, label = accent.Render("> "), bold.Render(label)
+			if i < len(commands.All) {
+				help = commands.All[i].Help
+			}
 		}
 		out.WriteString(pointer + label + "\n")
 	}
-	out.WriteString("\n" + m.wrap(dim.Render(actions[m.cursor].help)) + "\n\n")
+	out.WriteString("\n" + m.wrap(dim.Render(help)) + "\n\n")
 	out.WriteString(dim.Render("↑/↓ move · Enter open · q quit"))
 	return out.String()
 }
 
 func (m *model) groupContent() string {
 	var out strings.Builder
-	out.WriteString(accent.Render("Credentials") + "\n\n")
+	out.WriteString(accent.Render(m.command.Label) + "\n\n")
 	for i, group := range m.groups {
 		pointer, label := "  ", group
 		if i == m.cursor {

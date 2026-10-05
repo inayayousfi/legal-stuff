@@ -5,10 +5,11 @@ import (
 	"embed"
 
 	"github.com/inayayousfi/legal-stuff/internal/app"
+	"github.com/inayayousfi/legal-stuff/internal/apps/caddy"
 	"github.com/inayayousfi/legal-stuff/internal/apps/radarr"
 	"github.com/inayayousfi/legal-stuff/internal/apps/sonarr"
+	"github.com/inayayousfi/legal-stuff/internal/apps/vpn"
 	"github.com/inayayousfi/legal-stuff/internal/flow"
-	"github.com/inayayousfi/legal-stuff/internal/settings"
 )
 
 //go:embed compose.yaml
@@ -17,23 +18,24 @@ var compose embed.FS
 var App = &app.App{
 	Name:       "prowlarr",
 	Compose:    compose,
-	Services:   func(*settings.Values) []string { return []string{"prowlarr"} },
+	Services:   func(app.Values) []string { return []string{"prowlarr"} },
 	BehindVPN:  []string{"prowlarr"},
 	ConfigDirs: []string{"prowlarr"},
 	Setup: func(e *app.Env) error {
 		return e.Step("prowlarr", false, func() error {
-			return flow.Show(e.UI, Guide(e.Values.Get("ACCESS_URL"), e.Values.Get(sonarr.KeyName), e.Values.Get(radarr.KeyName)))
+			return flow.Show(e.UI, Guide(caddy.URL(e.Values), sonarr.APIKey(e.Values), radarr.APIKey(e.Values)))
 		})
 	},
-	Routes: func(v *settings.Values) []app.Route {
+	Routes: func(v app.Values) []app.Route {
 		return []app.Route{{
+			Name:     "Prowlarr",
 			Path:     "/prowlarr",
-			Upstream: v.Get("VPN_GATEWAY_SERVICE") + ":9696",
+			Upstream: vpn.Gateway(v) + ":9696",
 			Internal: &app.Internal{Name: "prowlarr", Port: 9696},
 		}}
 	},
-	Tiles: func(*settings.Values) []app.Tile {
-		return []app.Tile{{Group: "Admin", YAML: `    - Prowlarr:
+	Tiles: func(app.Values) []app.Tile {
+		return []app.Tile{{Group: "Admin", Position: 4, YAML: `    - Prowlarr:
         icon: prowlarr.png
         server: media-stack
         container: prowlarr

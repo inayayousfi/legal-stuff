@@ -65,22 +65,6 @@ func TestMissingFileReadsAsEmpty(t *testing.T) {
 	}
 }
 
-func TestOldJellyfinNamesAreMovedAndSaved(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".env")
-	os.WriteFile(path, []byte("JELLYFIN_USER=\"jelly\"\nJELLYFIN_PASS=secret\n"), 0o600)
-	values, err := Read(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if values.Get("JELLYFIN_ADMIN_USER") != "jelly" || values.Get("JELLYFIN_ADMIN_PASS") != "secret" {
-		t.Errorf("values = %v", values.Keys())
-	}
-	content, _ := os.ReadFile(path)
-	if strings.Contains(string(content), "JELLYFIN_USER=") {
-		t.Errorf("old name still saved:\n%s", content)
-	}
-}
-
 func TestProgressSurvivesAndKeepsEarlierSteps(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config", "setup-state.json")
 	progress, err := ReadProgress(path)

@@ -4,8 +4,11 @@
 package app
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"io/fs"
 	"path/filepath"
+	"time"
 
 	"github.com/inayayousfi/legal-stuff/internal/flow"
 	"github.com/inayayousfi/legal-stuff/internal/settings"
@@ -17,13 +20,24 @@ type App struct {
 	// Name identifies the app and names its Compose fragment.
 	Name string
 
+	// Settings are the .env values this app owns. Only this app changes them;
+	// other apps read them through functions this app's package exports.
+	Settings []Setting
+	// Renamed maps names that earlier versions saved to this app's current
+	// setting names. RetiredSettings and RetiredConfigDirs are what an app
+	// this one replaced left behind under .env and CONFIG_DIR. Setup and
+	// start move the renamed values and remove the retired ones.
+	Renamed           map[string]string
+	RetiredSettings   []string
+	RetiredConfigDirs []string
+
 	// Compose holds compose.yaml and any build files for this app's
 	// containers. The file is a text/template rendered with ComposeData.
 	Compose fs.FS
 
 	// Services lists the Compose services this app runs with the current
-	// values. BehindVPN services start only once the VPN gateway is ready.
-	Services  func(v *settings.Values) []string
+	// values. BehindVPN services start only once every Started hook returns.
+	Services  func(v Values) []string
 	BehindVPN []string
 	// Optional lists services that run only with some values. The stack
 	// stops the ones that Services does not return.
@@ -34,24 +48,28 @@ type App struct {
 	ConfigDirs []string
 	MediaDirs  []string
 
-	// Required lists .env keys that must be set before the stack can start.
-	// Validate checks their content.
-	Required []string
-	Validate func(v *settings.Values) error
+	// Validate checks the content of this app's saved settings before a start.
+	Validate func(v Values) error
 
-	// Derive fills values computed from other values or generated
-	// automatically. It runs before every start.
-	Derive func(v *settings.Values)
+	// Derive fills settings computed from other values or generated at
+	// random. It reads nothing but the values. It runs before every start.
+	Derive func(v Values)
 
-	// Configure asks the questions this app needs before the stack starts.
-	// It asks nothing when the saved values are already complete.
+	// Configure runs only during setup, before the stack starts. It asks the
+	// questions this app needs, asking nothing when the saved values are
+	// already complete, and performs this app's one-time host preparation
+	// as recorded setup steps.
 	Configure func(e *Env) error
 
-	// Prepare writes this app's files before the containers start. It
-	// returns the services that must restart because a file they read changed.
+	// Prepare brings this app's files and generated settings up to date
+	// before its containers start, saving values it changed. It may stop
+	// this app's own containers when a file can change only while they are
+	// stopped. It returns the services that must restart because a file
+	// they read changed.
 	Prepare func(e *Env) (restart []string, err error)
 
-	// Started runs once the containers that do not use the VPN are up.
+	// Started runs once the containers that do not use the VPN are up. The
+	// services behind the VPN start after every Started hook returns.
 	Started func(e *Env) error
 
 	// AfterStart runs at the end of the start command.
@@ -61,25 +79,88 @@ type App struct {
 	// stack is up. It records finished steps with Env.Step.
 	Setup func(e *Env) error
 
+	// Status describes this app's own health for a status command.
+	Status func(e *Env) (string, error)
+
 	// Routes are the web addresses Caddy serves for this app.
-	Routes func(v *settings.Values) []Route
+	Routes func(v Values) []Route
 
 	// Tiles are this app's entries on the Homepage dashboard.
-	Tiles func(v *settings.Values) []Tile
+	Tiles func(v Values) []Tile
 
 	// Credentials is the group of saved values that the credentials command
 	// shows and changes.
 	Credentials *CredentialGroup
 }
 
+// Setting is one .env value an app owns.
+type Setting struct {
+	Key string
+	// Example is the value shown in .env.example.
+	Example string
+	// Required settings must be set before the stack can start.
+	Required bool
+}
+
+// Owns reports whether key is one of this app's settings.
+func (a *App) Owns(key string) bool {
+	for _, setting := range a.Settings {
+		if setting.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+// Values reads every saved value and changes only the settings its owner declares.
+type Values struct {
+	saved *settings.Values
+	owner *App
+}
+
+// ValuesFor gives owner its view of saved.
+func ValuesFor(saved *settings.Values, owner *App) Values {
+	return Values{saved: saved, owner: owner}
+}
+
+func (v Values) Get(key string) string { return v.saved.Get(key) }
+
+func (v Values) Has(key string) bool { return v.saved.Has(key) }
+
+// Set changes one of the owner's settings. Setting another app's value is a
+// programming error and stops the program.
+func (v Values) Set(key, value string) {
+	v.mustOwn(key)
+	v.saved.Set(key, value)
+}
+
+// SetDefault sets one of the owner's settings only when it has no entry yet.
+func (v Values) SetDefault(key, value string) {
+	v.mustOwn(key)
+	v.saved.SetDefault(key, value)
+}
+
+func (v Values) mustOwn(key string) {
+	if !v.owner.Owns(key) {
+		panic("app " + v.owner.Name + " cannot set " + key + ", which it does not own")
+	}
+}
+
 // Route is one address that Caddy forwards to a container.
 type Route struct {
+	// Name is the application's name as people know it, such as Sonarr.
+	// Named routes appear in the admin sign-in's setup text.
+	Name string
 	// Path is the address path, such as /sonarr.
 	Path string
 	// Upstream is the container address, such as sonarr-app:8989.
 	Upstream string
 	// Public routes skip the admin sign-in.
 	Public bool
+	// SignIn marks the route whose upstream checks the admin sign-in for
+	// every route that is not public. Check is the path it answers on.
+	SignIn bool
+	Check  string
 	// StripPrefix removes Path before forwarding and redirects Path to Path/.
 	StripPrefix bool
 	// Port, when set, serves Upstream on its own port; Path redirects there.
@@ -99,6 +180,8 @@ type Internal struct {
 // Tile is one Homepage service entry.
 type Tile struct {
 	Group string
+	// Position orders the tiles within their group, lowest first.
+	Position int
 	// YAML is the entry's text, indented as a list item under its group.
 	YAML string
 }
@@ -108,7 +191,7 @@ type CredentialGroup struct {
 	Name   string
 	Fields []CredentialField
 	// Visible, when set, filters fields based on other values.
-	Visible func(v *settings.Values, f CredentialField) bool
+	Visible func(v Values, f CredentialField) bool
 }
 
 type CredentialKind int
@@ -131,23 +214,26 @@ type CredentialField struct {
 
 // ComposeData is passed to every Compose fragment template.
 type ComposeData struct {
-	// InternalNames are the container network names Caddy answers for.
-	InternalNames []string
+	// Routes are every app's routes with the current values.
+	Routes []Route
 }
 
-// Env gives a hook access to the saved values, the files, and the programs it runs.
+// Env gives a hook its app's values, the stack's files, and the programs it runs.
 type Env struct {
-	Root string
-	// Apps is the whole registry, for apps that assemble what every app
-	// contributes, such as the Caddyfile and the Homepage dashboard.
-	Apps   []*App
-	Values *settings.Values
+	Root   string
+	Values Values
 	Shell  shell.Shell
 	UI     flow.UI
-	// Progress is set during setup.
+	// Routes and Tiles are every app's contributions with the current
+	// values, for the apps that assemble them.
+	Routes []Route
+	Tiles  []Tile
+	// Progress is set during setup only.
 	Progress *settings.Progress
-	// SaveValues writes Values to .env.
+	// SaveValues writes every value to .env.
 	SaveValues func() error
+	// Sleep waits between checks while a hook polls a container.
+	Sleep func(time.Duration)
 }
 
 func (e *Env) ConfigDir() string { return e.Values.Get("CONFIG_DIR") }
@@ -162,8 +248,9 @@ func (e *Env) ConfigPath(parts ...string) string {
 // Compose runs docker compose with args in the stack folder.
 func (e *Env) Compose(args ...string) error { return shell.Compose(e.Shell, args...) }
 
-// Step runs a guided step once, recording it in the setup progress.
-// Steps already recorded are skipped unless again reports that they must repeat.
+// Step runs a guided step once, recording it in the setup progress. It is
+// available during setup only. Steps already recorded are skipped unless
+// again reports that they must repeat.
 func (e *Env) Step(name string, again bool, run func() error) error {
 	if e.Progress.Done(name) && !again {
 		return nil
@@ -180,3 +267,11 @@ const (
 	NetworkName   = "media-stack"
 	NetworkSubnet = "172.31.250.0/24"
 )
+
+// RandomToken returns a random secret of n bytes, encoded without characters
+// that .env or URLs would need to escape.
+func RandomToken(n int) string {
+	bytes := make([]byte, n)
+	rand.Read(bytes)
+	return base64.RawURLEncoding.EncodeToString(bytes)
+}

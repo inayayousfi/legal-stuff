@@ -9,42 +9,38 @@ import (
 	"github.com/inayayousfi/legal-stuff/internal/settings"
 )
 
-// CredentialGroups lists the groups in registry order.
-func (s *Stack) CredentialGroups() []*app.CredentialGroup {
-	var groups []*app.CredentialGroup
-	for _, a := range s.Apps {
+// CredentialGroups lists the groups' names in registry order.
+func CredentialGroups(apps []*app.App) []string {
+	var names []string
+	for _, a := range apps {
 		if a.Credentials != nil {
-			groups = append(groups, a.Credentials)
+			names = append(names, a.Credentials.Name)
 		}
 	}
-	return groups
+	return names
 }
 
 // Credentials shows one group's saved values and offers to change them.
 // Without a group, it lists the groups.
 func (s *Stack) Credentials(name string) error {
-	groups := s.CredentialGroups()
 	if name == "" {
-		var names []string
-		for _, group := range groups {
-			names = append(names, group.Name)
-		}
-		s.UI.Say("Choose a group: " + strings.Join(names, ", ") + "\nPasswords and API keys appear only when you choose a group.")
+		s.UI.Say("Choose a group: " + strings.Join(CredentialGroups(s.Apps), ", ") + "\nPasswords and API keys appear only when you choose a group.")
 		return nil
 	}
-	var group *app.CredentialGroup
-	for _, candidate := range groups {
-		if candidate.Name == name {
-			group = candidate
+	var owner *app.App
+	for _, a := range s.Apps {
+		if a.Credentials != nil && a.Credentials.Name == name {
+			owner = a
 		}
 	}
-	if group == nil {
+	if owner == nil {
 		return fmt.Errorf("Unknown group: %s.", name)
 	}
-	values, err := s.readSaved()
+	saved, err := s.readSaved()
 	if err != nil {
 		return err
 	}
+	group, values := owner.Credentials, app.ValuesFor(saved, owner)
 
 	var shown []app.CredentialField
 	for _, field := range group.Fields {
@@ -76,7 +72,7 @@ func (s *Stack) Credentials(name string) error {
 	if answers, err = s.UI.Ask(flow.Screen{Fields: fields}); err != nil {
 		return err
 	}
-	return s.saveChanges(values, shown, answers)
+	return s.saveChanges(saved, values, shown, answers)
 }
 
 func newValueField(field app.CredentialField) flow.Field {
@@ -92,13 +88,13 @@ func newValueField(field app.CredentialField) flow.Field {
 			if value == "" {
 				return "", nil
 			}
-			return flow.APIKey(value)
+			return flow.ValidAPIKey(value)
 		}
 	}
 	return result
 }
 
-func (s *Stack) saveChanges(values *settings.Values, fields []app.CredentialField, answers flow.Answers) error {
+func (s *Stack) saveChanges(saved *settings.Values, values app.Values, fields []app.CredentialField, answers flow.Answers) error {
 	changed, usedByStack := false, false
 	for _, field := range fields {
 		value := answers[field.Key]
@@ -113,7 +109,7 @@ func (s *Stack) saveChanges(values *settings.Values, fields []app.CredentialFiel
 		s.UI.Say("No changes.")
 		return nil
 	}
-	if err := settings.Write(s.envFile(), values); err != nil {
+	if err := settings.Write(s.envFile(), saved); err != nil {
 		return err
 	}
 	s.UI.Say("Saved.")

@@ -11,8 +11,9 @@ import (
 	"strings"
 
 	"github.com/inayayousfi/legal-stuff/internal/app"
+	"github.com/inayayousfi/legal-stuff/internal/apps/caddy"
+	"github.com/inayayousfi/legal-stuff/internal/files"
 	"github.com/inayayousfi/legal-stuff/internal/flow"
-	"github.com/inayayousfi/legal-stuff/internal/settings"
 )
 
 //go:embed compose.yaml
@@ -21,27 +22,37 @@ var compose embed.FS
 const (
 	userKey     = "JELLYFIN_ADMIN_USER"
 	passwordKey = "JELLYFIN_ADMIN_PASS"
-	KeyName     = "JELLYFIN_API_KEY"
+	keyName     = "JELLYFIN_API_KEY"
 	baseURL     = "/jellyfin"
 )
 
 var App = &app.App{
-	Name:       "jellyfin",
+	Name: "jellyfin",
+	Settings: []app.Setting{
+		{Key: userKey, Example: "replace_with_your_jellyfin_administrator_username"},
+		{Key: passwordKey, Example: "replace_with_your_jellyfin_administrator_password"},
+		{Key: keyName, Example: "replace_with_the_jellyfin_generated_api_key"},
+	},
+	Renamed: map[string]string{
+		"JELLYFIN_USER": userKey,
+		"JELLYFIN_PASS": passwordKey,
+	},
 	Compose:    compose,
-	Services:   func(*settings.Values) []string { return []string{"jellyfin-app"} },
+	Services:   func(app.Values) []string { return []string{"jellyfin-app"} },
 	ConfigDirs: []string{"jellyfin", "jellyfin-cache"},
 	Prepare:    prepare,
 	Setup:      setup,
-	Routes: func(*settings.Values) []app.Route {
+	Routes: func(app.Values) []app.Route {
 		return []app.Route{{
+			Name:     "Jellyfin",
 			Path:     baseURL,
 			Upstream: "jellyfin-app:8096",
 			Public:   true,
 			Internal: &app.Internal{Name: "jellyfin", Port: 8096},
 		}}
 	},
-	Tiles: func(*settings.Values) []app.Tile {
-		return []app.Tile{{Group: "Media", YAML: `    - Jellyfin:
+	Tiles: func(app.Values) []app.Tile {
+		return []app.Tile{{Group: "Media", Position: 1, YAML: `    - Jellyfin:
         icon: jellyfin.png
         server: media-stack
         container: jellyfin-app
@@ -52,7 +63,7 @@ var App = &app.App{
 	Credentials: &app.CredentialGroup{Name: "jellyfin", Fields: []app.CredentialField{
 		{Label: "Administrator username", Key: userKey, Kind: app.PlainText},
 		{Label: "Administrator password", Key: passwordKey, Kind: app.Password},
-		{Label: "API key", Key: KeyName, Kind: app.APIKey},
+		{Label: "API key", Key: keyName, Kind: app.APIKey},
 	}},
 }
 
@@ -69,8 +80,13 @@ func prepare(e *app.Env) ([]string, error) {
 	return nil, WriteBaseURL(path)
 }
 
+// AdminUser and AdminPassword are the Jellyfin administrator login.
+func AdminUser(v app.Values) string { return v.Get(userKey) }
+
+func AdminPassword(v app.Values) string { return v.Get(passwordKey) }
+
 func setup(e *app.Env) error {
-	accessURL := e.Values.Get("ACCESS_URL")
+	accessURL := caddy.URL(e.Values)
 	err := e.Step("jellyfin", false, func() error {
 		fields := credentialFields(e.Values)
 		answers, err := e.UI.Ask(Guide(accessURL, fields))
@@ -81,10 +97,10 @@ func setup(e *app.Env) error {
 		if err := e.SaveValues(); err != nil {
 			return err
 		}
-		if answers, err = e.UI.Ask(flow.Screen{Wait: "Jellyfin", Fields: []flow.Field{flow.APIKeyField(KeyName, "Jellyfin")}}); err != nil {
+		if answers, err = e.UI.Ask(flow.Screen{Wait: "Jellyfin", Fields: []flow.Field{flow.APIKeyField(keyName, "Jellyfin")}}); err != nil {
 			return err
 		}
-		e.Values.Set(KeyName, answers[KeyName])
+		e.Values.Set(keyName, answers[keyName])
 		return e.SaveValues()
 	})
 	if err != nil {
@@ -105,27 +121,27 @@ func setup(e *app.Env) error {
 		}
 	}
 
-	if !e.Values.Has(KeyName) {
+	if !e.Values.Has(keyName) {
 		answers, err := e.UI.Ask(flow.Screen{
 			Body:   "In Jellyfin, open Dashboard > API Keys, click New API Key, set App name to Radarr and Sonarr, then click Create. The following prompt requests the generated key.",
-			Fields: []flow.Field{flow.APIKeyField(KeyName, "Jellyfin")},
+			Fields: []flow.Field{flow.APIKeyField(keyName, "Jellyfin")},
 		})
 		if err != nil {
 			return err
 		}
-		e.Values.Set(KeyName, answers[KeyName])
+		e.Values.Set(keyName, answers[keyName])
 		if err := e.SaveValues(); err != nil {
 			return err
 		}
 	}
 
 	return e.Step("jellyfin-notifications", false, func() error {
-		return flow.Show(e.UI, NotificationsGuide(accessURL, e.Values.Get(KeyName)))
+		return flow.Show(e.UI, NotificationsGuide(accessURL, e.Values.Get(keyName)))
 	})
 }
 
 // credentialFields asks only for the administrator values not saved yet.
-func credentialFields(v *settings.Values) []flow.Field {
+func credentialFields(v app.Values) []flow.Field {
 	var fields []flow.Field
 	if !v.Has(userKey) {
 		fields = append(fields, flow.UsernameField(userKey, "Jellyfin administrator"))
@@ -136,7 +152,7 @@ func credentialFields(v *settings.Values) []flow.Field {
 	return fields
 }
 
-func saveAnswers(v *settings.Values, answers flow.Answers) {
+func saveAnswers(v app.Values, answers flow.Answers) {
 	for key, value := range answers {
 		v.Set(key, value)
 	}
@@ -222,10 +238,7 @@ func WriteBaseURL(path string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, []byte(updated), 0o644)
+	return files.WriteAtomic(path, []byte(updated), 0o644)
 }
 
 // setBaseURL edits the BaseUrl element of the root element as text, so the

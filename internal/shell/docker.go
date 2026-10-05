@@ -21,16 +21,15 @@ func Capture(s Shell, args ...string) (Result, error) {
 	return s.Run(Cmd{Args: args, Capture: true})
 }
 
-// DockerWait is how long WaitForDocker waits for the Docker engine to start.
-const DockerWait = 5 * time.Minute
+// dockerChecks is how many times WaitForDocker checks, 2 seconds apart: five minutes.
+const dockerChecks = 150
 
 // WaitForDocker waits until the Docker engine answers and Compose is available.
-func WaitForDocker(s Shell, timeout time.Duration, sleep func(time.Duration)) error {
+func WaitForDocker(s Shell, sleep func(time.Duration)) error {
 	if _, ok := Found("docker"); !ok {
 		return errors.New("Docker is not installed. Follow https://docs.docker.com/get-docker/.")
 	}
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	for range dockerChecks {
 		info, err := Capture(s, "docker", "info")
 		if err != nil {
 			return err

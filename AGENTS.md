@@ -14,7 +14,6 @@
 - A user decision to print saved credentials is a usability policy. Apply it consistently to passwords, usernames, and API keys needed by later steps.
 - State whether the user must create a value or whether the application generated it automatically. Do not make the user infer this from a field name.
 - Put exact copyable values on lines without trailing sentence punctuation. Punctuation adjacent to an address, password, username, path, or API key can be mistaken for part of the value.
-- Do not configure applications through an API or by editing their configuration files unless the user explicitly requests that mechanism.
 - Do not add explanatory paragraphs, headings, or workflow steps that the user did not request.
 - Treat repeated user-facing information as a defect. Print each address, credential, instruction, and fact once at the point where the user needs it.
 - Minimize cognitive cost. Merge related information into one block instead of making the user reconcile repeated or overlapping blocks.

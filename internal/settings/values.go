@@ -1,4 +1,5 @@
-// Package settings owns the saved values in .env and the setup progress file.
+// Package settings reads and writes the installation's saved state: the
+// values in .env and the setup progress file.
 package settings
 
 import (
@@ -6,16 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
+	"slices"
 	"strings"
 	"unicode/utf8"
-)
 
-// renamedKeys maps keys written by earlier versions to their current names.
-var renamedKeys = map[string]string{
-	"JELLYFIN_USER": "JELLYFIN_ADMIN_USER",
-	"JELLYFIN_PASS": "JELLYFIN_ADMIN_PASS",
-}
+	"github.com/inayayousfi/legal-stuff/internal/files"
+)
 
 // Values holds .env entries in the order they were first set, so a rewrite
 // keeps the file's existing order.
@@ -46,10 +43,18 @@ func (v *Values) SetDefault(key, value string) {
 	}
 }
 
+// Delete removes key and its entry.
+func (v *Values) Delete(key string) {
+	if _, ok := v.m[key]; !ok {
+		return
+	}
+	delete(v.m, key)
+	v.keys = slices.DeleteFunc(v.keys, func(k string) bool { return k == key })
+}
+
 func (v *Values) Keys() []string { return append([]string(nil), v.keys...) }
 
-// Read loads path. A missing file yields empty values. Keys renamed since an
-// earlier version are moved to their new names and the file is rewritten.
+// Read loads path. A missing file yields empty values.
 func Read(path string) (*Values, error) {
 	values := NewValues()
 	content, err := os.ReadFile(path)
@@ -59,7 +64,6 @@ func Read(path string) (*Values, error) {
 	if err != nil {
 		return nil, err
 	}
-	renamed := false
 	for _, raw := range strings.Split(string(content), "\n") {
 		line := strings.TrimSpace(raw)
 		key, rawValue, ok := strings.Cut(line, "=")
@@ -70,15 +74,7 @@ func Read(path string) (*Values, error) {
 		if json.Unmarshal([]byte(rawValue), &value) != nil {
 			value = rawValue
 		}
-		if newKey, ok := renamedKeys[key]; ok {
-			key, renamed = newKey, true
-		}
 		values.Set(key, strings.ReplaceAll(value, "$$", "$"))
-	}
-	if renamed {
-		if err := Write(path, values); err != nil {
-			return nil, err
-		}
 	}
 	return values, nil
 }
@@ -93,7 +89,7 @@ func Write(path string, values *Values) error {
 		}
 		fmt.Fprintf(&content, "%s=%s\n", key, encoded)
 	}
-	return WriteFileAtomic(path, []byte(content.String()), 0o600)
+	return files.WriteAtomic(path, []byte(content.String()), 0o600)
 }
 
 // encodeValue writes a double-quoted value that Docker Compose reads back
@@ -127,44 +123,4 @@ func encodeValue(value string) (string, error) {
 func surrogates(r rune) (rune, rune) {
 	r -= 0x10000
 	return 0xd800 + (r>>10)&0x3ff, 0xdc00 + r&0x3ff
-}
-
-// WriteFileAtomic writes content to a temporary file beside path, then renames it.
-func WriteFileAtomic(path string, content []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	file, err := os.CreateTemp(dir, "."+filepath.Base(path)+".")
-	if err != nil {
-		return err
-	}
-	name := file.Name()
-	_, writeErr := file.Write(content)
-	closeErr := file.Close()
-	if err := errors.Join(writeErr, closeErr); err != nil {
-		os.Remove(name)
-		return err
-	}
-	if err := os.Chmod(name, mode); err != nil {
-		os.Remove(name)
-		return err
-	}
-	if err := os.Rename(name, path); err != nil {
-		os.Remove(name)
-		return err
-	}
-	return nil
-}
-
-// WriteIfChanged writes content to path unless the file already holds it.
-// It reports whether the file changed.
-func WriteIfChanged(path string, content []byte) (bool, error) {
-	if current, err := os.ReadFile(path); err == nil && string(current) == string(content) {
-		return false, nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return false, err
-	}
-	return true, os.WriteFile(path, content, 0o644)
 }

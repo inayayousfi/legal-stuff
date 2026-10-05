@@ -27,13 +27,12 @@ type UI struct {
 
 // New returns a UI on the process's terminal.
 func New() *UI {
+	restoreConsoleInput()
 	fd := int(os.Stdin.Fd())
 	return &UI{In: bufio.NewReader(os.Stdin), Out: os.Stdout, Terminal: fd, masked: term.IsTerminal(fd)}
 }
 
 func (u *UI) Say(text string) { fmt.Fprintln(u.Out, text) }
-
-func (u *UI) Output() io.Writer { return u.Out }
 
 func (u *UI) Ask(screen flow.Screen) (flow.Answers, error) {
 	if screen.Title != "" {
@@ -91,7 +90,7 @@ func (u *UI) field(field flow.Field) (string, error) {
 		if value, err = check(field, value); err == nil {
 			return value, nil
 		}
-		fmt.Fprintln(u.Out, err)
+		u.problem(err.Error())
 	}
 }
 
@@ -121,7 +120,7 @@ func (u *UI) secret(field flow.Field) (string, error) {
 			return "", err
 		}
 		if value, err = check(field, value); err != nil {
-			fmt.Fprintln(u.Out, err)
+			u.problem(err.Error())
 			continue
 		}
 		if field.Repeat == "" || value == "" {
@@ -134,9 +133,12 @@ func (u *UI) secret(field flow.Field) (string, error) {
 		if repeated == value {
 			return value, nil
 		}
-		fmt.Fprintln(u.Out, field.Mismatch)
+		u.problem(field.Mismatch)
 	}
 }
+
+// problem shows why an entry was rejected.
+func (u *UI) problem(message string) { fmt.Fprintln(u.Out, "Error: "+message) }
 
 func (u *UI) choice(field flow.Field) (string, error) {
 	if !field.Listed {

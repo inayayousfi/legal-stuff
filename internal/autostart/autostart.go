@@ -1,4 +1,5 @@
-package platform
+// Package autostart makes the stack start with the computer.
+package autostart
 
 import (
 	"errors"
@@ -60,8 +61,8 @@ const (
 	systemService = "system"
 )
 
-// InstallAutostart makes the stack start with the computer.
-func InstallAutostart(s shell.Shell, ui flow.UI, program, root string) error {
+// Install makes the stack start with the computer.
+func Install(s shell.Shell, ui flow.UI, program, root string) error {
 	switch runtime.GOOS {
 	case "windows":
 		return installWindowsAutostart(ui, program, root)

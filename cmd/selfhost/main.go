@@ -17,34 +17,13 @@ import (
 	"golang.org/x/term"
 
 	"github.com/inayayousfi/legal-stuff/internal/apps"
+	"github.com/inayayousfi/legal-stuff/internal/commands"
 	"github.com/inayayousfi/legal-stuff/internal/flow"
 	"github.com/inayayousfi/legal-stuff/internal/shell"
 	"github.com/inayayousfi/legal-stuff/internal/stack"
 	"github.com/inayayousfi/legal-stuff/internal/ui/cli"
 	"github.com/inayayousfi/legal-stuff/internal/ui/tui"
 )
-
-type command struct {
-	name   string
-	help   string
-	detail string
-	run    func(s *stack.Stack, args []string) error
-}
-
-var commands = []command{
-	{"setup", "Configure credentials, services, Recyclarr, and automatic startup.", "Configure credentials, start the services, apply Recyclarr profiles, and install automatic startup.", func(s *stack.Stack, _ []string) error { return s.Setup() }},
-	{"start", "Start the services and synchronize Recyclarr.", "Start the media services, wait for Sonarr and Radarr, then synchronize Recyclarr.", func(s *stack.Stack, _ []string) error { return s.Start() }},
-	{"stop", "Stop and remove the stack containers.", "Stop and remove the media stack containers and network while preserving configuration and media files.", func(s *stack.Stack, _ []string) error { return s.Stop() }},
-	{"status", "Show the current service status.", "Show the current Docker Compose status for every media stack service.", func(s *stack.Stack, _ []string) error { return s.Status() }},
-	{"vpn-status", "Show the selected VPN gateway and its connection status.", "Check the selected VPN gateway health or Tailscale exit-node availability.", func(s *stack.Stack, _ []string) error { return s.VPNStatus() }},
-	{"credentials", "List or change the saved values for one service.", "Show the saved values for a service, vpn, or access. Answer y to type a new value for any credential, pressing Enter to keep a value. Changes are saved to .env only; change the password in the application itself as well.", func(s *stack.Stack, args []string) error {
-		group := ""
-		if len(args) > 0 {
-			group = args[0]
-		}
-		return s.Credentials(group)
-	}},
-}
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -66,39 +45,46 @@ func run(args []string) int {
 				UI:      ui,
 				Program: program,
 			}
-		}))
+		}, stack.CredentialGroups(apps.All)))
 	}
 	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
 		printHelp(os.Stdout)
 		return 0
 	}
 
-	var chosen *command
-	for i := range commands {
-		if commands[i].name == args[0] {
-			chosen = &commands[i]
-		}
-	}
-	if chosen == nil {
+	index := slices.IndexFunc(commands.All, func(c commands.Command) bool { return c.Name == args[0] })
+	if index < 0 {
 		fmt.Fprintf(os.Stderr, "Error: Unknown command '%s'.\n\n", args[0])
 		printHelp(os.Stderr)
 		return 2
 	}
-	rest := args[1:]
+	chosen, rest := commands.All[index], args[1:]
 	if slices.Contains(rest, "-h") || slices.Contains(rest, "--help") {
-		usage := chosen.name
-		if chosen.name == "credentials" {
+		usage := chosen.Name
+		if chosen.Group {
 			usage += " [group]"
 		}
-		fmt.Printf("Usage: %s %s\n\n%s\n", stack.Command, usage, chosen.detail)
+		fmt.Printf("Usage: %s %s\n\n%s\n", stack.Command, usage, chosen.Detail)
 		return 0
 	}
-	if chosen.name == "start" && len(rest) == 2 && rest[0] == "--log-file" {
+	if chosen.Name == "start" && len(rest) > 0 && rest[0] == "--log-file" {
+		if len(rest) != 2 {
+			fmt.Fprintln(os.Stderr, "Error: --log-file needs a file path.")
+			return 2
+		}
 		if err := logTo(rest[1]); err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			return 1
 		}
 		rest = nil
+	}
+	allowed := 0
+	if chosen.Group {
+		allowed = 1
+	}
+	if len(rest) > allowed {
+		fmt.Fprintf(os.Stderr, "Error: Unexpected argument '%s'. Add -h after the command for its usage.\n", rest[allowed])
+		return 2
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -117,7 +103,7 @@ func run(args []string) int {
 		UI:      cli.New(),
 		Program: program,
 	}
-	return report(chosen.run(s, rest))
+	return report(chosen.Run(s, rest))
 }
 
 // locate returns the folder that holds the stack, which is the folder of
@@ -137,7 +123,7 @@ func report(err error) int {
 	switch {
 	case err == nil:
 		return 0
-	case errors.Is(err, flow.ErrCancelled), errors.Is(err, tui.ErrInterrupted):
+	case errors.Is(err, flow.ErrCancelled):
 		fmt.Fprintln(os.Stderr, "\nCommand cancelled.")
 		return 130
 	}
@@ -162,18 +148,12 @@ func logTo(path string) error {
 func printHelp(out io.Writer) {
 	fmt.Fprintf(out, "Set up and operate the self-hosted stack.\n\nUsage:\n  %s            open the full-screen interface\n  %s <command>\n\nCommands:\n", stack.Command, stack.Command)
 	width := 0
-	for _, c := range commands {
-		width = max(width, len(c.name))
+	for _, c := range commands.All {
+		width = max(width, len(c.Name))
 	}
-	for _, c := range commands {
-		fmt.Fprintf(out, "  %-*s  %s\n", width, c.name, c.help)
+	for _, c := range commands.All {
+		fmt.Fprintf(out, "  %-*s  %s\n", width, c.Name, c.Help)
 	}
 	fmt.Fprintf(out, "  %-*s  %s\n", width, "help", "Show this help. Add -h after a command for its details.")
-	var groups []string
-	for _, a := range apps.All {
-		if a.Credentials != nil {
-			groups = append(groups, a.Credentials.Name)
-		}
-	}
-	fmt.Fprintf(out, "\n'credentials' takes a group name: %s.\nWithout a group it lists the groups. Passwords and API keys appear only when you choose a group.\n", strings.Join(groups, ", "))
+	fmt.Fprintf(out, "\n'credentials' takes a group name: %s.\nWithout a group it lists the groups. Passwords and API keys appear only when you choose a group.\n", strings.Join(stack.CredentialGroups(apps.All), ", "))
 }

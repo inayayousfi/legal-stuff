@@ -7,10 +7,11 @@ import (
 	"strconv"
 
 	"github.com/inayayousfi/legal-stuff/internal/app"
+	"github.com/inayayousfi/legal-stuff/internal/apps/caddy"
+	"github.com/inayayousfi/legal-stuff/internal/apps/jellyfin"
 	"github.com/inayayousfi/legal-stuff/internal/apps/radarr"
 	"github.com/inayayousfi/legal-stuff/internal/apps/sonarr"
 	"github.com/inayayousfi/legal-stuff/internal/flow"
-	"github.com/inayayousfi/legal-stuff/internal/settings"
 )
 
 //go:embed compose.yaml
@@ -22,18 +23,18 @@ const Port = 5055
 var App = &app.App{
 	Name:       "seerr",
 	Compose:    compose,
-	Services:   func(*settings.Values) []string { return []string{"seerr"} },
+	Services:   func(app.Values) []string { return []string{"seerr"} },
 	ConfigDirs: []string{"seerr"},
 	Setup: func(e *app.Env) error {
 		return e.Step("seerr", false, func() error {
 			return flow.Show(e.UI, Guide(e.Values))
 		})
 	},
-	Routes: func(*settings.Values) []app.Route {
-		return []app.Route{{Path: "/seerr", Upstream: "seerr:5055", Public: true, Port: Port}}
+	Routes: func(app.Values) []app.Route {
+		return []app.Route{{Name: "Seerr", Path: "/seerr", Upstream: "seerr:" + strconv.Itoa(Port), Public: true, Port: Port}}
 	},
-	Tiles: func(*settings.Values) []app.Tile {
-		return []app.Tile{{Group: "Media", YAML: `    - Seerr:
+	Tiles: func(app.Values) []app.Tile {
+		return []app.Tile{{Group: "Media", Position: 2, YAML: `    - Seerr:
         icon: seerr.png
         server: media-stack
         container: seerr
@@ -44,25 +45,25 @@ var App = &app.App{
 }
 
 // Guide connects Seerr to Jellyfin, Radarr, and Sonarr with the saved logins and keys.
-func Guide(v *settings.Values) flow.Screen {
+func Guide(v app.Values) flow.Screen {
 	return flow.Screen{
 		Title: "Seerr setup",
 		Body: `Open this link:
-` + v.Get("ACCESS_URL") + ":" + strconv.Itoa(Port) + `
+` + caddy.URL(v) + ":" + strconv.Itoa(Port) + `
 
 1. Choose Jellyfin as the server type.
 2. Jellyfin URL: jellyfin
 3. Port: 8096
 4. Email Address: enter an email address of your choice. Seerr uses it for notifications and its own sign-in.
-5. Username: ` + v.Get("JELLYFIN_ADMIN_USER") + `
-6. Password: ` + v.Get("JELLYFIN_ADMIN_PASS") + `
+5. Username: ` + jellyfin.AdminUser(v) + `
+6. Password: ` + jellyfin.AdminPassword(v) + `
 7. Click Sign In.
 8. Click Sync Libraries, enable the Movies and Shows libraries, then click Continue.
 9. Click Add Radarr Server and check Default Server.
 10. Server Name: Radarr
 11. Hostname or IP Address: radarr
 12. Port: 7878
-13. API Key: ` + v.Get(radarr.KeyName) + `
+13. API Key: ` + radarr.APIKey(v) + `
 14. Click Test.
 15. Quality Profile: 4K Progressive
 16. Root Folder: /media/Movies
@@ -71,7 +72,7 @@ func Guide(v *settings.Values) flow.Screen {
 19. Server Name: Sonarr
 20. Hostname or IP Address: sonarr
 21. Port: 8989
-22. API Key: ` + v.Get(sonarr.KeyName) + `
+22. API Key: ` + sonarr.APIKey(v) + `
 23. Click Test.
 24. Quality Profile: 4K Progressive
 25. Root Folder: /media/Series

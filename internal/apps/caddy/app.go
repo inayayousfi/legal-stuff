@@ -10,9 +10,8 @@ import (
 	"strings"
 
 	"github.com/inayayousfi/legal-stuff/internal/app"
+	"github.com/inayayousfi/legal-stuff/internal/files"
 	"github.com/inayayousfi/legal-stuff/internal/flow"
-	"github.com/inayayousfi/legal-stuff/internal/platform"
-	"github.com/inayayousfi/legal-stuff/internal/settings"
 )
 
 //go:embed compose.yaml
@@ -21,6 +20,7 @@ var compose embed.FS
 const (
 	modeKey = "ACCESS_MODE"
 	hostKey = "ADMIN_ACCESS_HOST"
+	urlKey  = "ACCESS_URL"
 
 	Tailscale = "tailscale"
 	Domain    = "domain"
@@ -28,22 +28,26 @@ const (
 )
 
 var App = &app.App{
-	Name:       "caddy",
+	Name: "caddy",
+	Settings: []app.Setting{
+		{Key: modeKey, Example: Tailscale, Required: true},
+		{Key: hostKey, Example: "media-host.example.ts.net", Required: true},
+		{Key: urlKey, Example: "https://media-host.example.ts.net"},
+	},
 	Compose:    compose,
-	Services:   func(*settings.Values) []string { return []string{"caddy"} },
+	Services:   func(app.Values) []string { return []string{"caddy"} },
 	ConfigDirs: []string{"caddy/certs", "caddy/data", "caddy/config"},
-	Required:   []string{modeKey, hostKey},
 	Validate:   validate,
-	Derive: func(v *settings.Values) {
+	Derive: func(v app.Values) {
 		if v.Has(modeKey) {
-			applyAccessValues(v)
+			v.Set(urlKey, scheme(v)+"://"+v.Get(hostKey))
 		}
 	},
 	Configure: configure,
 	Prepare:   prepare,
 	Credentials: &app.CredentialGroup{Name: "access", Fields: []app.CredentialField{
 		{Label: "Mode", Key: modeKey},
-		{Label: "Address", Key: "ACCESS_URL"},
+		{Label: "Address", Key: urlKey},
 		{Label: "Media directory", Key: "MEDIA_DIR"},
 		{Label: "Configuration directory", Key: "CONFIG_DIR"},
 	}},
@@ -63,7 +67,7 @@ var modes = []flow.Option{
 	{
 		Value:  Local,
 		Label:  "Local network name without encryption",
-		Detail: "Pros: nothing to buy or configure outside this computer.\nCons: passwords and pages cross your network unencrypted. Devices that cannot resolve .local names, including some Android phones, cannot open the pages.",
+		Detail: "Pros: nothing to buy or configure outside this computer.\nCons: passwords and pages cross your network unencrypted, so passkeys and Google sign-in are unavailable. Devices that cannot resolve .local names, including some Android phones, cannot open the pages.",
 	},
 }
 
@@ -79,7 +83,23 @@ func ValidHost(host string) (string, error) {
 	return host, nil
 }
 
-func validate(v *settings.Values) error {
+// URL is the address that serves every web page, such as https://media.example.com.
+func URL(v app.Values) string { return v.Get(urlKey) }
+
+// Host is the name in URL, such as media.example.com.
+func Host(v app.Values) string { return v.Get(hostKey) }
+
+// Secure reports whether the pages are served over HTTPS.
+func Secure(v app.Values) bool { return scheme(v) == "https" }
+
+func scheme(v app.Values) string {
+	if v.Get(modeKey) == Local {
+		return "http"
+	}
+	return "https"
+}
+
+func validate(v app.Values) error {
 	switch v.Get(modeKey) {
 	case Tailscale, Domain, Local:
 	default:
@@ -89,42 +109,32 @@ func validate(v *settings.Values) error {
 	return err
 }
 
-func applyAccessValues(v *settings.Values) {
-	scheme := "https"
-	if v.Get(modeKey) == Local {
-		scheme = "http"
-	}
-	v.Set("ACCESS_URL", scheme+"://"+v.Get(hostKey))
-	if scheme == "https" {
-		v.Set("TINYAUTH_SECURE_COOKIE", "true")
-	} else {
-		v.Set("TINYAUTH_SECURE_COOKIE", "false")
-	}
-}
-
 func modeField(listed bool) flow.Field {
 	return flow.Field{Key: "mode", Prompt: "Select an access mode", Kind: flow.Choice, Default: Tailscale, Options: modes, Listed: listed}
 }
 
 func hostField(prompt, fallback string) flow.Field {
-	return flow.Field{Key: "host", Prompt: prompt, Default: fallback, Check: func(value string) (string, error) {
-		host, err := ValidHost(value)
-		if err != nil {
-			return "", errors.New("Error: " + err.Error())
-		}
-		return host, nil
-	}}
+	return flow.Field{Key: "host", Prompt: prompt, Default: fallback, Check: ValidHost}
 }
 
+// configure asks for the access mode and address unless valid ones are
+// saved. In Tailscale mode on Linux it lets this user fetch certificates once.
 func configure(e *app.Env) error {
-	v := e.Values
-	if v.Has(modeKey) {
-		if err := validate(v); err != nil {
+	if validate(e.Values) != nil {
+		if err := askAccess(e); err != nil {
 			return err
 		}
-		applyAccessValues(v)
+	}
+	if e.Values.Get(modeKey) != Tailscale {
 		return nil
 	}
+	return e.Step("tailscale-operator", false, func() error {
+		return grantTailscaleOperator(e.Shell, e.UI.Say)
+	})
+}
+
+func askAccess(e *app.Env) error {
+	v := e.Values
 	screen := flow.Screen{
 		Title:  "Secure access",
 		Body:   "Every web page is reached through one address. Choose how that address is encrypted:",
@@ -140,13 +150,13 @@ func configure(e *app.Env) error {
 		if mode != Tailscale {
 			break
 		}
-		host = platform.TailscaleDNSName(e.Shell)
+		host = tailscaleDNSName(e.Shell)
 		if host == "" {
 			screen = flow.Screen{Body: "Tailscale is not installed or not signed in on this computer. Choose another mode.", Fields: []flow.Field{modeField(true)}}
 			continue
 		}
-		if platform.TailscaleServeUsesHTTPS(e.Shell) {
-			screen = flow.Screen{Body: platform.TailscaleServeConflict, Fields: []flow.Field{modeField(true)}}
+		if tailscaleServeUsesHTTPS(e.Shell) {
+			screen = flow.Screen{Body: tailscaleServeConflict, Fields: []flow.Field{modeField(true)}}
 			continue
 		}
 		if err := flow.Show(e.UI, flow.Screen{
@@ -184,29 +194,23 @@ Let's Encrypt connects to this computer through those ports to issue the certifi
 	}
 	v.Set(modeKey, mode)
 	v.Set(hostKey, host)
-	applyAccessValues(v)
 	return nil
 }
 
 func prepare(e *app.Env) ([]string, error) {
-	tailscale := e.Values.Get(modeKey) == Tailscale
-	if tailscale && e.Progress != nil {
-		err := e.Step("tailscale-operator", false, func() error {
-			return platform.GrantTailscaleOperator(e.Shell, e.UI.Say)
-		})
-		if err != nil {
-			return nil, err
-		}
-	}
 	certChanged := false
-	if tailscale {
+	if e.Values.Get(modeKey) == Tailscale {
 		var err error
-		certChanged, err = platform.TailscaleCert(e.Shell, e.ConfigPath("caddy", "certs", "cert.pem"), e.ConfigPath("caddy", "certs", "key.pem"), e.Values.Get(hostKey))
+		certChanged, err = tailscaleCert(e.Shell, e.ConfigPath("caddy", "certs", "cert.pem"), e.ConfigPath("caddy", "certs", "key.pem"), Host(e.Values))
 		if err != nil {
 			return nil, err
 		}
 	}
-	configChanged, err := settings.WriteIfChanged(e.ConfigPath("caddy", "Caddyfile"), []byte(Caddyfile(e.Values, Routes(e.Apps, e.Values))))
+	content, err := Caddyfile(e.Values, e.Routes)
+	if err != nil {
+		return nil, err
+	}
+	configChanged, err := files.WriteIfChanged(e.ConfigPath("caddy", "Caddyfile"), []byte(content))
 	if err != nil {
 		return nil, err
 	}
@@ -214,26 +218,4 @@ func prepare(e *app.Env) ([]string, error) {
 		return []string{"caddy"}, nil
 	}
 	return nil, nil
-}
-
-// Routes collects every app's routes in registry order.
-func Routes(apps []*app.App, v *settings.Values) []app.Route {
-	var routes []app.Route
-	for _, a := range apps {
-		if a.Routes != nil {
-			routes = append(routes, a.Routes(v)...)
-		}
-	}
-	return routes
-}
-
-// InternalNames lists the network names Caddy answers for inside the stack network.
-func InternalNames(apps []*app.App, v *settings.Values) []string {
-	var names []string
-	for _, route := range Routes(apps, v) {
-		if route.Internal != nil {
-			names = append(names, route.Internal.Name)
-		}
-	}
-	return names
 }

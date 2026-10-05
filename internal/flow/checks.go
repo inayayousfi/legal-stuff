@@ -17,15 +17,6 @@ func ValidAPIKey(key string) (string, error) {
 	return strings.ToLower(key), nil
 }
 
-// APIKey checks a pasted API key and shows the problem as an error line.
-func APIKey(value string) (string, error) {
-	key, err := ValidAPIKey(value)
-	if err != nil {
-		return "", errors.New("Error: " + err.Error())
-	}
-	return key, nil
-}
-
 // Required rejects an empty entry with message.
 func Required(message string) func(string) (string, error) {
 	return func(value string) (string, error) {
@@ -46,7 +37,7 @@ func Username(value string) (string, error) {
 
 // APIKeyField asks for the API key that service generated.
 func APIKeyField(key, service string) Field {
-	return Field{Key: key, Prompt: "Paste the " + service + " API key", Check: APIKey}
+	return Field{Key: key, Prompt: "Paste the " + service + " API key", Check: ValidAPIKey}
 }
 
 // PasswordField asks for a new password twice.

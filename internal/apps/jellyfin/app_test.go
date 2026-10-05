@@ -62,7 +62,7 @@ func TestMissingBaseURLIsWrittenWhileJellyfinIsStopped(t *testing.T) {
 	values := settings.NewValues()
 	values.Set("CONFIG_DIR", t.TempDir())
 	sh := &fake.Shell{}
-	e := &app.Env{Values: values, Shell: sh}
+	e := &app.Env{Values: app.ValuesFor(values, App), Shell: sh}
 	path := networkFile(e.ConfigDir())
 	if _, err := prepare(e); err != nil {
 		t.Fatal(err)

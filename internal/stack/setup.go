@@ -2,13 +2,15 @@ package stack
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/inayayousfi/legal-stuff/internal/app"
+	"github.com/inayayousfi/legal-stuff/internal/autostart"
 	"github.com/inayayousfi/legal-stuff/internal/flow"
-	"github.com/inayayousfi/legal-stuff/internal/platform"
 	"github.com/inayayousfi/legal-stuff/internal/settings"
 	"github.com/inayayousfi/legal-stuff/internal/shell"
 )
@@ -17,16 +19,16 @@ import (
 // first configuration, and installs automatic start. Progress is saved, so
 // an interrupted setup resumes where it stopped.
 func (s *Stack) Setup() error {
-	platform.RestoreConsoleInput()
 	if err := s.waitForDocker(); err != nil {
 		return err
 	}
-	s.UI.Say("This setup saves progress and can be rerun after an interruption.\n" +
-		"It does not migrate named volumes created by the previous stack.\n" +
-		"Existing named volumes are left untouched for manual recovery.")
+	s.UI.Say("This setup saves progress and can be rerun after an interruption.")
 
 	values, err := settings.Read(s.envFile())
 	if err != nil {
+		return err
+	}
+	if err := s.migrate(values); err != nil {
 		return err
 	}
 	var mediaDir string
@@ -55,10 +57,9 @@ func (s *Stack) Setup() error {
 	if err != nil {
 		return err
 	}
-	e := s.env(values, progress)
 	for _, a := range s.Apps {
 		if a.Configure != nil {
-			if err := a.Configure(e); err != nil {
+			if err := a.Configure(s.env(a, values, progress)); err != nil {
 				return err
 			}
 		}
@@ -67,7 +68,7 @@ func (s *Stack) Setup() error {
 	if err := s.createDirectories(values); err != nil {
 		return err
 	}
-	if err := e.SaveValues(); err != nil {
+	if err := settings.Write(s.envFile(), values); err != nil {
 		return err
 	}
 
@@ -80,22 +81,50 @@ func (s *Stack) Setup() error {
 	if err := s.recreateNetworkIfNeeded(); err != nil {
 		return err
 	}
-	if err := s.startServices(e); err != nil {
+	if err := s.startServices(values, progress); err != nil {
 		return err
 	}
 
 	for _, a := range s.Apps {
 		if a.Setup != nil {
-			if err := a.Setup(e); err != nil {
+			if err := a.Setup(s.env(a, values, progress)); err != nil {
 				return err
 			}
 		}
 	}
 
-	if err := platform.InstallAutostart(s.Shell, s.UI, s.Program, s.Root); err != nil {
+	if err := autostart.Install(s.Shell, s.UI, s.Program, s.Root); err != nil {
 		return err
 	}
 	s.UI.Say("Setup complete. Use '" + Command + " status' to inspect it.\nOpen Homepage:\n" + values.Get("ACCESS_URL"))
+	return nil
+}
+
+// migrate moves values saved under names that earlier versions used to each
+// app's current setting names, and removes what replaced apps left behind.
+func (s *Stack) migrate(values *settings.Values) error {
+	for _, a := range s.Apps {
+		for _, key := range a.RetiredSettings {
+			values.Delete(key)
+		}
+		if values.Has("CONFIG_DIR") {
+			for _, dir := range a.RetiredConfigDirs {
+				if err := os.RemoveAll(filepath.Join(values.Get("CONFIG_DIR"), filepath.FromSlash(dir))); err != nil {
+					return fmt.Errorf("Cannot remove the unused folder %s: %w", dir, err)
+				}
+			}
+		}
+		v := app.ValuesFor(values, a)
+		for old, current := range a.Renamed {
+			if !values.Has(old) {
+				continue
+			}
+			if !v.Has(current) {
+				v.Set(current, values.Get(old))
+			}
+			values.Delete(old)
+		}
+	}
 	return nil
 }
 
@@ -103,18 +132,18 @@ func (s *Stack) Setup() error {
 func normalizedPath(raw string) (string, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
-		return "", errors.New("Error: Path cannot be empty.")
+		return "", errors.New("Path cannot be empty.")
 	}
 	if value == "~" || strings.HasPrefix(value, "~/") || strings.HasPrefix(value, `~\`) {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return "", errors.New("Error: Cannot resolve path: " + raw)
+			return "", errors.New("Cannot resolve path: " + raw)
 		}
 		value = filepath.Join(home, value[1:])
 	}
 	path, err := filepath.Abs(value)
 	if err != nil {
-		return "", errors.New("Error: Cannot resolve path: " + raw)
+		return "", errors.New("Cannot resolve path: " + raw)
 	}
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		path = resolved

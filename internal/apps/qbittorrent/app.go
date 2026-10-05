@@ -8,8 +8,11 @@ import (
 	"strings"
 
 	"github.com/inayayousfi/legal-stuff/internal/app"
+	"github.com/inayayousfi/legal-stuff/internal/apps/authentik"
+	"github.com/inayayousfi/legal-stuff/internal/apps/caddy"
+	"github.com/inayayousfi/legal-stuff/internal/apps/vpn"
+	"github.com/inayayousfi/legal-stuff/internal/files"
 	"github.com/inayayousfi/legal-stuff/internal/flow"
-	"github.com/inayayousfi/legal-stuff/internal/settings"
 )
 
 //go:embed compose.yaml
@@ -19,13 +22,13 @@ const noticeKey = "QBT_LEGAL_NOTICE"
 
 var App = &app.App{
 	Name:       "qbittorrent",
+	Settings:   []app.Setting{{Key: noticeKey, Example: "confirm", Required: true}},
 	Compose:    compose,
-	Services:   func(*settings.Values) []string { return []string{"qbittorrent"} },
+	Services:   func(app.Values) []string { return []string{"qbittorrent"} },
 	BehindVPN:  []string{"qbittorrent"},
 	ConfigDirs: []string{"qbittorrent"},
 	MediaDirs:  []string{"Downloads"},
-	Required:   []string{noticeKey},
-	Validate: func(v *settings.Values) error {
+	Validate: func(v app.Values) error {
 		if v.Get(noticeKey) != "confirm" {
 			return errors.New("qBittorrent's legal notice is not confirmed in .env.")
 		}
@@ -37,15 +40,16 @@ var App = &app.App{
 		return nil, err
 	},
 	Setup: setup,
-	Routes: func(v *settings.Values) []app.Route {
+	Routes: func(v app.Values) []app.Route {
 		return []app.Route{{
+			Name:        "qBittorrent",
 			Path:        "/qbittorrent",
-			Upstream:    v.Get("VPN_GATEWAY_SERVICE") + ":8080",
+			Upstream:    vpn.Gateway(v) + ":8080",
 			StripPrefix: true,
 		}}
 	},
-	Tiles: func(*settings.Values) []app.Tile {
-		return []app.Tile{{Group: "Admin", YAML: `    - qBittorrent:
+	Tiles: func(app.Values) []app.Tile {
+		return []app.Tile{{Group: "Admin", Position: 1, YAML: `    - qBittorrent:
         icon: qbittorrent.png
         server: media-stack
         container: qbittorrent
@@ -77,7 +81,7 @@ func configure(e *app.Env) error {
 
 func setup(e *app.Env) error {
 	return e.Step("qbittorrent", false, func() error {
-		return flow.Show(e.UI, Guide(e.Values.Get("ACCESS_URL"), e.Values.Get("ADMIN_USER"), e.Values.Get("ADMIN_PASS")))
+		return flow.Show(e.UI, Guide(caddy.URL(e.Values), authentik.User(e.Values), authentik.Password(e.Values)))
 	})
 }
 
@@ -147,7 +151,7 @@ func WriteLoginBypass(path string) (bool, error) {
 	if content == original {
 		return false, nil
 	}
-	return settings.WriteIfChanged(path, []byte(content))
+	return files.WriteIfChanged(path, []byte(content))
 }
 
 // splitLines splits like Python's str.splitlines for "\n" and "\r\n" endings.

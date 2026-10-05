@@ -1,12 +1,8 @@
-// Package flow describes what a guided step shows and asks, and runs a chain
-// of steps through a user interface. Steps never print or read input
-// themselves, so the CLI and the TUI present the same steps.
+// Package flow describes what a guided step shows and asks. Steps never
+// print or read input themselves, so the CLI and the TUI present the same steps.
 package flow
 
-import (
-	"errors"
-	"io"
-)
+import "errors"
 
 type Kind int
 
@@ -44,8 +40,8 @@ type Field struct {
 	// shown when the two entries differ.
 	Repeat   string
 	Mismatch string
-	// Check validates the entry and returns the value to keep. Its error
-	// text is shown as is before asking again.
+	// Check validates the entry and returns the value to keep. Each
+	// interface shows its error text as an error before asking again.
 	Check func(string) (string, error)
 }
 
@@ -62,42 +58,16 @@ type Screen struct {
 // Answers maps field keys to entered values.
 type Answers map[string]string
 
-// Step is a screen plus what happens with its answers. Then returns the next
-// step, or nil when the chain is finished.
-type Step struct {
-	Screen
-	Then func(Answers) (*Step, error)
-}
-
 // UI presents screens and reports progress.
 type UI interface {
 	// Ask shows the screen and returns its answers once every field is valid.
 	Ask(Screen) (Answers, error)
 	// Say shows a progress message.
 	Say(text string)
-	// Output receives the output of commands that run while a step works.
-	Output() io.Writer
 }
 
 // ErrCancelled is returned when the user cancels an Ask.
 var ErrCancelled = errors.New("Command cancelled.")
-
-// Run presents step and every step that follows it.
-func Run(ui UI, step *Step) error {
-	for step != nil {
-		answers, err := ui.Ask(step.Screen)
-		if err != nil {
-			return err
-		}
-		if step.Then == nil {
-			return nil
-		}
-		if step, err = step.Then(answers); err != nil {
-			return err
-		}
-	}
-	return nil
-}
 
 // Show presents one screen that has nothing to answer, such as a guide with a pause.
 func Show(ui UI, screen Screen) error {

@@ -109,15 +109,32 @@ func TestUnknownCountryIsRejected(t *testing.T) {
 	}
 }
 
-func TestRefusedChangeIsReportedAndNotSaved(t *testing.T) {
+// A refused change stays saved, so the reapply loop puts it in place once Gluetun accepts it.
+func TestRefusedChangeIsReportedAndKeptForTheNextAttempt(t *testing.T) {
 	stub := &gluetunStub{fail: true}
 	p := newPage(t, stub)
 	response := post(p, "Spain")
-	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), "Gluetun did not accept the change") {
+	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), "will apply when Gluetun accepts it") {
 		t.Errorf("response %d:\n%s", response.Code, response.Body)
 	}
-	if _, err := os.Stat(p.selectionFile()); err == nil {
-		t.Error("a refused change was saved")
+	if !slices.Equal(p.savedCountries(), []string{"Spain"}) {
+		t.Errorf("saved = %v", p.savedCountries())
+	}
+	stub.fail = false
+	if err := p.reapplySavedSelection(); err != nil || !slices.Equal(stub.countries, []string{"Spain"}) {
+		t.Errorf("err = %v, gluetun = %v", err, stub.countries)
+	}
+}
+
+// A choice that cannot be saved is not applied, so the reapply loop cannot undo it.
+func TestUnsavedChangeLeavesGluetunAlone(t *testing.T) {
+	stub := &gluetunStub{countries: []string{"Austria"}}
+	p := newPage(t, stub)
+	os.Mkdir(p.selectionFile(), 0o755)
+	os.WriteFile(filepath.Join(p.selectionFile(), "keep"), nil, 0o644)
+	response := post(p, "Spain")
+	if response.Code != http.StatusInternalServerError || !slices.Equal(stub.countries, []string{"Austria"}) {
+		t.Errorf("response %d, gluetun = %v", response.Code, stub.countries)
 	}
 }
 

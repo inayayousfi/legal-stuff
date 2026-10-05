@@ -5,16 +5,15 @@ import (
 	"strings"
 
 	"github.com/inayayousfi/legal-stuff/internal/app"
-	"github.com/inayayousfi/legal-stuff/internal/apps/tinyauth"
-	"github.com/inayayousfi/legal-stuff/internal/settings"
 )
 
 // Caddyfile serves every route at the access address. Routes that are not
-// public or the fallback pass through the admin sign-in first.
-func Caddyfile(v *settings.Values, routes []app.Route) string {
+// public or the fallback, including those on their own port, pass through
+// the sign-in route's check first.
+func Caddyfile(v app.Values, routes []app.Route) (string, error) {
 	mode := v.Get(modeKey)
-	host := v.Get(hostKey)
-	url := v.Get("ACCESS_URL")
+	host := Host(v)
+	url := URL(v)
 	tls := ""
 	if mode == Tailscale {
 		tls = "\ttls /certs/cert.pem /certs/key.pem\n"
@@ -24,7 +23,13 @@ func Caddyfile(v *settings.Values, routes []app.Route) string {
 		site = "http://" + host
 	}
 
-	guard := fmt.Sprintf("\t\tforward_auth %s {\n\t\t\turi /api/auth/caddy\n\t\t}\n", tinyauth.Address)
+	signIn, check := "", ""
+	for _, route := range routes {
+		if route.SignIn {
+			signIn, check = route.Upstream, route.Check
+		}
+	}
+	guard := fmt.Sprintf("\t\tforward_auth %s {\n\t\t\turi %s\n\t\t\ttrusted_proxies private_ranges\n\t\t}\n", signIn, check)
 	var public, protected []string
 	var fallback string
 	var portSites, internal []string
@@ -35,12 +40,22 @@ func Caddyfile(v *settings.Values, routes []app.Route) string {
 			if route.Path != "" {
 				public = append(public, fmt.Sprintf("\t@%s path %s %s/*\n\tredir @%s %s:%d/\n", name, route.Path, route.Path, name, url, route.Port))
 			}
-			portSites = append(portSites, fmt.Sprintf("%s:%d {\n%s\treverse_proxy %s\n}\n", site, route.Port, tls, route.Upstream))
+			if route.Public {
+				portSites = append(portSites, fmt.Sprintf("%s:%d {\n%s\treverse_proxy %s\n}\n", site, route.Port, tls, route.Upstream))
+				break
+			}
+			if signIn == "" {
+				return "", fmt.Errorf("No app checks the admin sign-in for port %d.", route.Port)
+			}
+			portSites = append(portSites, fmt.Sprintf("%s:%d {\n%s\thandle {\n%s\t\treverse_proxy %s\n\t}\n}\n", site, route.Port, tls, guard, route.Upstream))
 		case route.Fallback:
 			fallback = fmt.Sprintf("\thandle {\n\t\treverse_proxy %s\n\t}\n", route.Upstream)
 		case route.Public:
 			public = append(public, matchedHandle(name, route, ""))
 		default:
+			if signIn == "" {
+				return "", fmt.Errorf("No app checks the admin sign-in for %s.", route.Path)
+			}
 			protected = append(protected, matchedHandle(name, route, guard))
 		}
 		if route.Internal != nil {
@@ -72,7 +87,7 @@ http://:%d {
 	for _, block := range internal {
 		out.WriteString(block)
 	}
-	return out.String()
+	return out.String(), nil
 }
 
 // matchedHandle forwards one path, keeping or removing the path prefix, after

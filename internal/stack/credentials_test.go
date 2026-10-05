@@ -76,7 +76,7 @@ func TestChangedAPIKeyIsValidatedSavedAndAppliesAtNextStart(t *testing.T) {
 		t.Errorf("messages = %q", tail)
 	}
 	field := ui.Screens[1].Fields[0]
-	if _, err := field.Check("not-a-key"); err == nil || err.Error() != "Error: API keys must contain exactly 32 hexadecimal characters." {
+	if _, err := field.Check("not-a-key"); err == nil || err.Error() != "API keys must contain exactly 32 hexadecimal characters." {
 		t.Errorf("invalid key error = %v", err)
 	}
 }
