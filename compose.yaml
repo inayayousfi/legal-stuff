@@ -19,8 +19,6 @@ services:
       FIREWALL_INPUT_PORTS: "8080,6881,8000,9696"
       TZ: "${TZ}"
     ports:
-      - "8080:8080/tcp"
-      - "9696:9696/tcp"
       - "6881:6881/tcp"
       - "6881:6881/udp"
     volumes:
@@ -29,7 +27,6 @@ services:
       default:
         aliases:
           - qbittorrent
-          - prowlarr
 
   tailscale-vpn:
     image: tailscale/tailscale:latest@sha256:2667499ed87ae29218f292556ba062918402dd5e92e93637af14867e4df12dd3
@@ -48,8 +45,6 @@ services:
       TS_USERSPACE: "false"
       TS_EXTRA_ARGS: "--exit-node=${TAILSCALE_EXIT_NODE:-} --exit-node-allow-lan-access=true"
     ports:
-      - "8080:8080/tcp"
-      - "9696:9696/tcp"
       - "6881:6881/tcp"
       - "6881:6881/udp"
     volumes:
@@ -58,20 +53,17 @@ services:
       default:
         aliases:
           - qbittorrent
-          - prowlarr
 
   homepage:
     image: ghcr.io/gethomepage/homepage:latest@sha256:643bd0be730d40f69d58028a55d1a896739333e8815786df42bc97f109ecbe61
     container_name: homepage
     restart: unless-stopped
     environment:
-      HOMEPAGE_ALLOWED_HOSTS: "${ADMIN_ACCESS_HOST}:3000"
-      HOMEPAGE_VAR_HOST: "${ADMIN_ACCESS_HOST}"
+      HOMEPAGE_ALLOWED_HOSTS: "${ADMIN_ACCESS_HOST}"
+      HOMEPAGE_VAR_URL: "${ACCESS_URL}"
       HOMEPAGE_VAR_GLUETUN_API_KEY: "${GLUETUN_API_KEY:-}"
       PUID: "${PUID}"
       PGID: "${PGID}"
-    ports:
-      - "3000:3000/tcp"
     volumes:
       - "${CONFIG_DIR}/homepage:/app/config"
     depends_on:
@@ -101,13 +93,15 @@ services:
     security_opt:
       - no-new-privileges:true
 
-  jellyfin:
+  jellyfin-app:
     image: jellyfin/jellyfin:10@sha256:aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db
-    container_name: jellyfin
+    container_name: jellyfin-app
     user: "${PUID}:${PGID}"
     restart: unless-stopped
+    environment:
+      JELLYFIN_PublishedServerUrl: "${ACCESS_URL}/jellyfin"
+      HEALTHCHECK_URL: http://localhost:8096/jellyfin/health
     ports:
-      - "8096:8096/tcp"
       - "7359:7359/udp"
     volumes:
       - "${CONFIG_DIR}/jellyfin:/config"
@@ -122,14 +116,12 @@ services:
     restart: unless-stopped
     environment:
       TZ: "${TZ}"
-    ports:
-      - "5055:5055/tcp"
     volumes:
       - "${CONFIG_DIR}/seerr:/app/config"
     depends_on:
-      - jellyfin
-      - sonarr
-      - radarr
+      - jellyfin-app
+      - sonarr-app
+      - radarr-app
 
   vpn-country:
     image: python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72
@@ -141,8 +133,6 @@ services:
       GLUETUN_CONTROL_KEY: "${GLUETUN_CONTROL_KEY:-}"
       PYTHONUNBUFFERED: "1"
       TZ: "${TZ}"
-    ports:
-      - "8090:8090/tcp"
     volumes:
       - "./vpn_country.py:/app/vpn_country.py:ro"
       - "${CONFIG_DIR}/vpn-country:/data"
@@ -168,21 +158,25 @@ services:
     image: lscr.io/linuxserver/prowlarr:latest@sha256:1295cff29d10b486c0d8324d1559a552140a5932bf8b3d87e398654414f63f92
     container_name: prowlarr
     restart: unless-stopped
-    environment: &linuxserver-environment
-      PUID: "${PUID}"
-      PGID: "${PGID}"
-      TZ: "${TZ}"
+    environment:
+      <<: &linuxserver-environment
+        PUID: "${PUID}"
+        PGID: "${PGID}"
+        TZ: "${TZ}"
+      PROWLARR__SERVER__URLBASE: /prowlarr
+      PROWLARR__AUTH__METHOD: External
     network_mode: "service:${VPN_GATEWAY_SERVICE}"
     volumes:
       - "${CONFIG_DIR}/prowlarr:/config"
 
-  sonarr:
+  sonarr-app:
     image: lscr.io/linuxserver/sonarr:latest@sha256:373159ba768e23a3a1c497d9f2b936addf8fd5b1fdce7dd6a14080ac928bfda0
-    container_name: sonarr
+    container_name: sonarr-app
     restart: unless-stopped
-    environment: *linuxserver-environment
-    ports:
-      - "8989:8989/tcp"
+    environment:
+      <<: *linuxserver-environment
+      SONARR__SERVER__URLBASE: /sonarr
+      SONARR__AUTH__METHOD: External
     volumes:
       - "${CONFIG_DIR}/sonarr:/config"
       - "${MEDIA_DIR}:/media"
@@ -190,13 +184,14 @@ services:
       - qbittorrent
       - prowlarr
 
-  radarr:
+  radarr-app:
     image: lscr.io/linuxserver/radarr:latest@sha256:a45b5ab0f850f39edb4cc9c95bbd967b52ddc3d4574a4dfb45561177db6c88f4
-    container_name: radarr
+    container_name: radarr-app
     restart: unless-stopped
-    environment: *linuxserver-environment
-    ports:
-      - "7878:7878/tcp"
+    environment:
+      <<: *linuxserver-environment
+      RADARR__SERVER__URLBASE: /radarr
+      RADARR__AUTH__METHOD: External
     volumes:
       - "${CONFIG_DIR}/radarr:/config"
       - "${MEDIA_DIR}:/media"
@@ -217,11 +212,54 @@ services:
       - "${CONFIG_DIR}/recyclarr:/config"
       - "${CONFIG_DIR}/recyclarr-data:/data"
     depends_on:
-      - sonarr
-      - radarr
+      - sonarr-app
+      - radarr-app
     security_opt:
       - no-new-privileges:true
+
+  caddy:
+    image: caddy:2@sha256:3422ce6de165df66534f9b9ba50efaf457114ec961763cc52f5dbdaac2972d73
+    container_name: caddy
+    user: "${PUID}:${PGID}"
+    restart: unless-stopped
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+      - "5055:5055/tcp"
+      - "9091:9091/tcp"
+    volumes:
+      - "${CONFIG_DIR}/caddy/Caddyfile:/etc/caddy/Caddyfile:ro"
+      - "${CONFIG_DIR}/caddy/certs:/certs:ro"
+      - "${CONFIG_DIR}/caddy/data:/data"
+      - "${CONFIG_DIR}/caddy/config:/config"
+    networks:
+      default:
+        aliases:
+          - sonarr
+          - radarr
+          - prowlarr
+          - jellyfin
+
+  tinyauth:
+    image: ghcr.io/tinyauthapp/tinyauth:v5@sha256:220aa235c76393a73fece831d7ba967b8698d3907fd8e3c4c952f699c7b142a5
+    container_name: tinyauth
+    user: "${PUID}:${PGID}"
+    restart: unless-stopped
+    environment:
+      TINYAUTH_APPURL: "${ACCESS_URL}:9091"
+      TINYAUTH_AUTH_USERS: "${TINYAUTH_USERS:-}"
+      TINYAUTH_AUTH_SUBDOMAINSENABLED: "false"
+      TINYAUTH_AUTH_SECURECOOKIE: "${TINYAUTH_SECURE_COOKIE:-false}"
+      TINYAUTH_UI_WARNINGSENABLED: "false"
+      TINYAUTH_UI_TITLE: Media Stack
+      TINYAUTH_ANALYTICS_ENABLED: "false"
+      TINYAUTH_RESOURCES_ENABLED: "false"
+    volumes:
+      - "${CONFIG_DIR}/tinyauth:/data"
 
 networks:
   default:
     name: media-stack
+    ipam:
+      config:
+        - subnet: 172.31.250.0/24

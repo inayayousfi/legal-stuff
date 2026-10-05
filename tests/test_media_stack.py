@@ -3,7 +3,7 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import DEFAULT, Mock, patch
 
 import media_stack
 
@@ -19,18 +19,14 @@ class EnvironmentTests(unittest.TestCase):
                 "PGID": "1000",
                 "TZ": "Europe/Paris",
                 "QBT_LEGAL_NOTICE": "confirm",
-                "QBIT_USER": "admin",
-                "QBIT_PASS": "qbit-secret",
+                "ADMIN_USER": "admin",
+                "ADMIN_PASS": "admin-secret$",
+                "ACCESS_MODE": "tailscale",
+                "ADMIN_ACCESS_HOST": "media.example.ts.net",
                 "JELLYFIN_ADMIN_USER": "jellyfin-admin",
                 "JELLYFIN_ADMIN_PASS": "jellyfin-secret",
-                "SONARR_USER": "admin",
-                "SONARR_PASS": "sonarr-secret",
                 "SONARR_API_KEY": "0" * 32,
-                "RADARR_USER": "admin",
-                "RADARR_PASS": "radarr-secret",
                 "RADARR_API_KEY": "1" * 32,
-                "PROWLARR_USER": "admin",
-                "PROWLARR_PASS": "prowlarr-secret",
                 "VPN_SERVICE_PROVIDER": "nordvpn",
                 "VPN_GATEWAY_SERVICE": "gluetun",
                 "VPN_TYPE": "openvpn",
@@ -72,10 +68,10 @@ class EnvironmentTests(unittest.TestCase):
     def test_partial_environment_can_be_loaded_for_setup_resume(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / ".env"
-            media_stack.write_env(path, {"MEDIA_DIR": "/media", "QBIT_USER": "admin"})
+            media_stack.write_env(path, {"MEDIA_DIR": "/media", "ADMIN_USER": "admin"})
             self.assertEqual(
                 media_stack.read_env_values(path),
-                {"MEDIA_DIR": "/media", "QBIT_USER": "admin"},
+                {"MEDIA_DIR": "/media", "ADMIN_USER": "admin"},
             )
 
     def test_missing_resume_environment_is_empty(self):
@@ -139,7 +135,7 @@ class HomepageTests(unittest.TestCase):
             self.assertIn("  Admin:\n    style: row\n    columns: 3\n    initiallyCollapsed: true\n", settings)
             self.assertIn("type: gluetun", services)
             self.assertIn('key: "{{HOMEPAGE_VAR_GLUETUN_API_KEY}}"', services)
-            self.assertIn("href: http://{{HOMEPAGE_VAR_HOST}}:8090", admin)
+            self.assertIn('href: "{{HOMEPAGE_VAR_URL}}/vpn-country/"', admin)
             auth = (config_dir / "gluetun" / "auth" / "config.toml").read_text()
             homepage_role, country_role = auth.split('name = "vpn-country"')
             self.assertIn('routes = ["GET /v1/publicip/ip"]', homepage_role)
@@ -161,13 +157,14 @@ class HomepageTests(unittest.TestCase):
             self.assertNotIn("type: gluetun", services)
             self.assertFalse((config_dir / "gluetun").exists())
 
-    def test_dashboard_links_use_the_detected_host(self):
+    def test_dashboard_links_use_the_access_address_and_service_paths(self):
         services = (media_stack.HOMEPAGE_TEMPLATE_DIR / "services.yaml").read_text(
             encoding="utf-8"
         )
-        self.assertEqual(services.count("{{HOMEPAGE_VAR_HOST}}"), 6)
-        for port in (8096, 5055, 8080, 8989, 7878, 9696):
-            self.assertIn(f":{port}", services)
+        self.assertEqual(services.count('href: "{{HOMEPAGE_VAR_URL}}/'), 6)
+        for path in ("/jellyfin", "/seerr", "/qbittorrent/", "/sonarr", "/radarr", "/prowlarr"):
+            # Quoted: a YAML value starting with "{" would be read as a mapping.
+            self.assertIn(f'href: "{{{{HOMEPAGE_VAR_URL}}}}{path}"\n', services)
 
     def test_dashboard_metrics_exclude_network(self):
         widgets = (media_stack.HOMEPAGE_TEMPLATE_DIR / "widgets.yaml").read_text(
@@ -255,19 +252,6 @@ class ValidationTests(unittest.TestCase):
                 media_stack.prompt_api_key("Sonarr")
         self.assertEqual(output.getvalue(), "")
 
-    def test_temporary_qbittorrent_password_is_extracted(self):
-        logs = (
-            "The WebUI administrator password was not set. "
-            "A temporary password is provided for this session: AbC123xy"
-        )
-        self.assertEqual(
-            media_stack.temporary_qbittorrent_password(logs), "AbC123xy"
-        )
-
-    def test_missing_temporary_qbittorrent_password_is_rejected(self):
-        with self.assertRaisesRegex(media_stack.StackError, "did not publish"):
-            media_stack.temporary_qbittorrent_password("qBittorrent started")
-
 
 class SetupGuideTests(unittest.TestCase):
     def guide_output(self, printer, *arguments):
@@ -284,9 +268,9 @@ class SetupGuideTests(unittest.TestCase):
             "SONARR_API_KEY": "a" * 32,
         }
         output = self.guide_output(
-            media_stack.print_seerr_guide, "media.example.ts.net", values
+            media_stack.print_seerr_guide, "https://media.example.ts.net", values
         )
-        self.assertIn("http://media.example.ts.net:5055\n", output)
+        self.assertIn("https://media.example.ts.net:5055\n", output)
         for line in (
             "Jellyfin URL: jellyfin\n",
             "Username: jelly\n",
@@ -305,10 +289,10 @@ class SetupGuideTests(unittest.TestCase):
 
     def test_jellyfin_notifications_guide_prints_key_hosts_and_triggers(self):
         output = self.guide_output(
-            media_stack.print_jellyfin_notifications_guide, "media.example.ts.net", "c" * 32
+            media_stack.print_jellyfin_notifications_guide, "https://media.example.ts.net", "c" * 32
         )
-        self.assertIn("http://media.example.ts.net:7878\n", output)
-        self.assertIn("http://media.example.ts.net:8989\n", output)
+        self.assertIn("https://media.example.ts.net/radarr\n", output)
+        self.assertIn("https://media.example.ts.net/sonarr\n", output)
         self.assertEqual(output.count(f"API Key: {'c' * 32}\n"), 2)
         self.assertEqual(output.count("Host: jellyfin\n"), 2)
         self.assertEqual(output.count("select Emby / Jellyfin."), 2)
@@ -317,39 +301,39 @@ class SetupGuideTests(unittest.TestCase):
         self.assertNotIn("JELLYFIN_API_KEY", output)
 
     def test_jellyfin_guide_asks_for_generated_api_key(self):
-        output = self.guide_output(media_stack.print_jellyfin_guide, "localhost")
+        output = self.guide_output(media_stack.print_jellyfin_guide, "https://media.example.ts.net")
         self.assertIn("click New API Key, set App name to Radarr and Sonarr, then click Create.", output)
         self.assertIn("Jellyfin generated automatically. A terminal prompt after these steps will ask for it.", output)
 
-    def test_qbittorrent_guide_contains_login_and_ui_path(self):
-        output = self.guide_output(media_stack.print_qbittorrent_guide, "Temporary123")
-        self.assertIn("http://localhost:8080", output)
-        self.assertIn("Temporary password: Temporary123", output)
-        self.assertEqual(output.count("http://localhost:8080"), 1)
-        self.assertIn("Tools > Options > Web UI", output)
-        self.assertIn("replace the temporary login", output)
-        self.assertIn("requested after these steps", output)
-        self.assertIn("/media/Downloads", output)
-        self.assertIn("6. Set Keep incomplete torrents in to /media/Downloads/incomplete\n", output)
-        self.assertIn("Authentication", output)
-        self.assertNotIn("QBIT_USER", output)
-        self.assertNotIn("QBIT_PASS", output)
+    def test_qbittorrent_guide_prints_admin_login_link_and_download_paths(self):
+        output = self.guide_output(
+            media_stack.print_qbittorrent_guide, "https://media.example.ts.net", "boss", "admin-secret"
+        )
+        self.assertEqual(output.count("https://media.example.ts.net/qbittorrent/\n"), 1)
+        self.assertIn("Username: boss\n", output)
+        self.assertIn("Password: admin-secret\n", output)
+        self.assertIn("Tools > Options > Downloads", output)
+        self.assertIn("Default Save Path to /media/Downloads\n", output)
+        self.assertIn("Keep incomplete torrents in to /media/Downloads/incomplete\n", output)
+        self.assertNotIn("Temporary", output)
+        self.assertNotIn("ADMIN_", output)
 
-    def test_service_guides_contain_urls_and_media_paths(self):
+    def test_service_guides_contain_paths_and_media_folders(self):
         guides = (
-            (media_stack.print_sonarr_guide, "http://localhost:8989", "/media/Series"),
-            (media_stack.print_radarr_guide, "http://localhost:7878", "/media/Movies"),
-            (media_stack.print_prowlarr_guide, "http://localhost:9696", "http://sonarr:8989"),
-            (media_stack.print_jellyfin_guide, "http://localhost:8096", "/media/Movies"),
+            (media_stack.print_sonarr_guide, "https://media.example.ts.net/sonarr\n", "/media/Series"),
+            (media_stack.print_radarr_guide, "https://media.example.ts.net/radarr\n", "/media/Movies"),
+            (media_stack.print_prowlarr_guide, "https://media.example.ts.net/prowlarr\n", "http://sonarr:8989"),
+            (media_stack.print_jellyfin_guide, "https://media.example.ts.net/jellyfin\n", "/media/Movies"),
         )
         for printer, url, path in guides:
             with self.subTest(url=url):
-                output = self.guide_output(printer)
-                self.assertIn(url, output)
+                output = self.guide_output(printer, "https://media.example.ts.net")
+                self.assertEqual(output.count(url), 1)
                 self.assertIn(path, output)
+                self.assertNotIn("first-run authentication", output)
 
     def test_jellyfin_guide_explains_login_and_missing_media(self):
-        output = self.guide_output(media_stack.print_jellyfin_guide)
+        output = self.guide_output(media_stack.print_jellyfin_guide, "https://media.example.ts.net")
         self.assertIn("administrator account", output)
         self.assertIn("username and password requested after these steps", output)
         self.assertIn("Dashboard > Users > your user > Parental Control", output)
@@ -366,28 +350,28 @@ class SetupGuideTests(unittest.TestCase):
         )
         for printer in printers:
             with self.subTest(printer=printer.__name__):
-                output = self.guide_output(printer)
+                output = self.guide_output(printer, "https://media.example.ts.net")
                 self.assertNotIn("_USER", output)
                 self.assertNotIn("_PASS", output)
                 self.assertNotIn("_API_KEY", output)
 
-    def test_sonarr_and_radarr_guides_print_saved_qbittorrent_login(self):
+    def test_sonarr_and_radarr_connect_to_qbittorrent_without_a_login(self):
         for printer in (
             media_stack.print_sonarr_guide,
             media_stack.print_radarr_guide,
         ):
             with self.subTest(printer=printer.__name__):
-                output = self.guide_output(
-                    printer, "media.example.ts.net", "saved-user", "saved-password"
+                output = self.guide_output(printer, "https://media.example.ts.net")
+                self.assertIn(
+                    "Set Host to qbittorrent and Port to 8080. Leave Username and Password empty.\n",
+                    output,
                 )
-                self.assertIn("Username: saved-user", output)
-                self.assertIn("Password: saved-password", output)
                 self.assertIn("generated automatically", output)
 
     def test_prowlarr_guide_prints_saved_api_keys(self):
         output = self.guide_output(
             media_stack.print_prowlarr_guide,
-            "media.example.ts.net",
+            "https://media.example.ts.net",
             "a" * 32,
             "b" * 32,
         )
@@ -401,14 +385,6 @@ class SetupGuideTests(unittest.TestCase):
             self.assertIn(address, output)
             self.assertNotIn(f"{address}.", output)
 
-    def test_service_guides_use_remote_host(self):
-        host = "media-host.example.ts.net"
-        output = self.guide_output(media_stack.print_qbittorrent_guide, "secret", host)
-        self.assertIn(f"http://{host}:8080", output)
-        self.assertEqual(output.count(f"http://{host}:8080"), 1)
-        self.assertIn("Temporary username: admin", output)
-        self.assertIn("Temporary password: secret", output)
-
     @patch("media_stack.prompt_password", return_value="secret")
     @patch("media_stack.prompt_username", return_value="admin")
     def test_credentials_can_be_requested_one_service_at_a_time(
@@ -417,8 +393,8 @@ class SetupGuideTests(unittest.TestCase):
         values = {}
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            media_stack.ensure_credentials(values, ("QBIT",))
-        self.assertEqual(values, {"QBIT_USER": "admin", "QBIT_PASS": "secret"})
+            media_stack.ensure_credentials(values, ("ADMIN",))
+        self.assertEqual(values, {"ADMIN_USER": "admin", "ADMIN_PASS": "secret"})
         self.assertEqual(prompt_username.call_count, 1)
         self.assertEqual(prompt_password.call_count, 1)
         self.assertEqual(output.getvalue(), "")
@@ -438,12 +414,6 @@ class SetupGuideTests(unittest.TestCase):
         media_stack.ensure_credentials(values, ("JELLYFIN_ADMIN",))
         prompt_username.assert_called_once_with("Jellyfin administrator")
         prompt_password.assert_called_once_with("Jellyfin administrator")
-
-    def test_ipv6_service_url_uses_brackets(self):
-        self.assertEqual(
-            media_stack.service_url("fd7a:115c:a1e0::1", 8080),
-            "http://[fd7a:115c:a1e0::1]:8080",
-        )
 
     def test_nordvpn_guide_identifies_service_credentials(self):
         output = self.guide_output(media_stack.print_vpn_guide, "nordvpn")
@@ -537,11 +507,14 @@ class JellyfinSetupTests(unittest.TestCase):
             existing = {
                 "MEDIA_DIR": directory,
                 "QBT_LEGAL_NOTICE": "confirm",
+                "ACCESS_MODE": "tailscale",
                 "ADMIN_ACCESS_HOST": "media.example.ts.net",
+                "ADMIN_USER": "boss",
+                "ADMIN_PASS": "admin-secret",
                 "SONARR_API_KEY": "a" * 32,
                 "RADARR_API_KEY": "b" * 32,
             }
-            completed = {"qbittorrent", "sonarr", "radarr", "prowlarr", "seerr", "jellyfin-notifications"}
+            completed = {"qbittorrent", "sonarr", "radarr", "prowlarr", "seerr", "jellyfin-notifications", "tailscale-operator"}
 
             def check_saved(service):
                 self.assertEqual(service, "Jellyfin")
@@ -549,8 +522,15 @@ class JellyfinSetupTests(unittest.TestCase):
 
             with patch.object(media_stack, "ENV_FILE", env_path), \
                  patch("media_stack.read_env_values", return_value=existing), \
-                 patch("media_stack.restore_windows_console_input"), \
-                 patch("media_stack.wait_for_docker"), \
+                 patch.multiple(
+                     "media_stack",
+                     restore_windows_console_input=DEFAULT,
+                     wait_for_docker=DEFAULT,
+                     grant_tailscale_operator=DEFAULT,
+                     recreate_network_if_needed=DEFAULT,
+                     ensure_tinyauth_users=Mock(return_value=False),
+                     prepare_proxy=Mock(return_value=False),
+                 ), \
                  patch("media_stack.user_ids", return_value=("1000", "1000")), \
                  patch("media_stack.ensure_vpn_config"), \
                  patch("media_stack.create_directories"), \
@@ -569,8 +549,7 @@ class JellyfinSetupTests(unittest.TestCase):
                 media_stack.setup()
             self.assertIn('JELLYFIN_ADMIN_USER="admin"', env_path.read_text())
             self.assertIn(f'JELLYFIN_API_KEY="{"d" * 32}"', env_path.read_text())
-            self.assertIn("Open Homepage:\nhttp://media.example.ts.net:3000\n", output.getvalue())
-            self.assertEqual(output.getvalue().count("http://media.example.ts.net:3000"), 1)
+            self.assertTrue(output.getvalue().endswith("Open Homepage:\nhttps://media.example.ts.net\n"))
 
     def test_jellyfin_key_is_saved_before_notifications_guide_uses_it(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -579,13 +558,16 @@ class JellyfinSetupTests(unittest.TestCase):
             existing = {
                 "MEDIA_DIR": directory,
                 "QBT_LEGAL_NOTICE": "confirm",
+                "ACCESS_MODE": "tailscale",
                 "ADMIN_ACCESS_HOST": "media.example.ts.net",
+                "ADMIN_USER": "boss",
+                "ADMIN_PASS": "admin-secret",
                 "SONARR_API_KEY": "a" * 32,
                 "RADARR_API_KEY": "b" * 32,
                 "JELLYFIN_ADMIN_USER": "jelly",
                 "JELLYFIN_ADMIN_PASS": "jelly-secret",
             }
-            completed = {"qbittorrent", "sonarr", "radarr", "prowlarr", "seerr"}
+            completed = {"qbittorrent", "sonarr", "radarr", "prowlarr", "seerr", "tailscale-operator"}
 
             def prompt_key(service):
                 events.append(f"key:{service}")
@@ -597,8 +579,15 @@ class JellyfinSetupTests(unittest.TestCase):
 
             with patch.object(media_stack, "ENV_FILE", env_path), \
                  patch("media_stack.read_env_values", return_value=existing), \
-                 patch("media_stack.restore_windows_console_input"), \
-                 patch("media_stack.wait_for_docker"), \
+                 patch.multiple(
+                     "media_stack",
+                     restore_windows_console_input=DEFAULT,
+                     wait_for_docker=DEFAULT,
+                     grant_tailscale_operator=DEFAULT,
+                     recreate_network_if_needed=DEFAULT,
+                     ensure_tinyauth_users=Mock(return_value=False),
+                     prepare_proxy=Mock(return_value=False),
+                 ), \
                  patch("media_stack.user_ids", return_value=("1000", "1000")), \
                  patch("media_stack.ensure_vpn_config"), \
                  patch("media_stack.create_directories"), \
@@ -626,18 +615,28 @@ class JellyfinSetupTests(unittest.TestCase):
             existing = {
                 "MEDIA_DIR": directory,
                 "QBT_LEGAL_NOTICE": "confirm",
+                "ACCESS_MODE": "tailscale",
                 "ADMIN_ACCESS_HOST": "media.example.ts.net",
+                "ADMIN_USER": "boss",
+                "ADMIN_PASS": "admin-secret",
                 "SONARR_API_KEY": "a" * 32,
                 "RADARR_API_KEY": "b" * 32,
                 "JELLYFIN_ADMIN_USER": "jelly",
                 "JELLYFIN_ADMIN_PASS": "jelly-secret",
             }
             existing["JELLYFIN_API_KEY"] = "c" * 32
-            completed = {"qbittorrent", "sonarr", "radarr", "prowlarr", "jellyfin", "jellyfin-notifications"}
+            completed = {"qbittorrent", "sonarr", "radarr", "prowlarr", "jellyfin", "jellyfin-notifications", "tailscale-operator"}
             with patch.object(media_stack, "ENV_FILE", Path(directory) / ".env"), \
                  patch("media_stack.read_env_values", return_value=existing), \
-                 patch("media_stack.restore_windows_console_input"), \
-                 patch("media_stack.wait_for_docker"), \
+                 patch.multiple(
+                     "media_stack",
+                     restore_windows_console_input=DEFAULT,
+                     wait_for_docker=DEFAULT,
+                     grant_tailscale_operator=DEFAULT,
+                     recreate_network_if_needed=DEFAULT,
+                     ensure_tinyauth_users=Mock(return_value=False),
+                     prepare_proxy=Mock(return_value=False),
+                 ), \
                  patch("media_stack.user_ids", return_value=("1000", "1000")), \
                  patch("media_stack.ensure_vpn_config"), \
                  patch("media_stack.create_directories"), \
@@ -669,16 +668,40 @@ class ComposeSecurityTests(unittest.TestCase):
             'network_mode: "service:${VPN_GATEWAY_SERVICE}"', qbittorrent
         )
         self.assertNotIn("ports:", qbittorrent)
-        prowlarr = compose.split("  prowlarr:", 1)[1].split("\n  sonarr:", 1)[0]
+        prowlarr = compose.split("  prowlarr:", 1)[1].split("\n  sonarr-app:", 1)[0]
         self.assertIn('network_mode: "service:${VPN_GATEWAY_SERVICE}"', prowlarr)
         self.assertNotIn("ports:", prowlarr)
         for gateway in (gluetun, tailscale):
-            self.assertIn('"9696:9696/tcp"', gateway)
-            self.assertIn("- prowlarr", gateway)
-        self.assertIn('"8080:8080/tcp"', gluetun)
+            self.assertIn('ports:\n      - "6881:6881/tcp"\n      - "6881:6881/udp"\n', gateway)
+            self.assertNotIn('"9696:9696/tcp"', gateway)
+            self.assertNotIn('"8080:8080/tcp"', gateway)
+            self.assertTrue(gateway.rstrip().endswith("aliases:\n          - qbittorrent"))
         self.assertIn('FIREWALL_INPUT_PORTS: "8080,6881,8000,9696"', gluetun)
-        self.assertIn('"8080:8080/tcp"', tailscale)
         self.assertIn("--exit-node=${TAILSCALE_EXIT_NODE:-}", tailscale)
+
+    def test_proxy_owns_internal_names_and_only_published_web_ports(self):
+        compose = (media_stack.ROOT / "compose.yaml").read_text(encoding="utf-8")
+        caddy = compose.split("  caddy:", 1)[1].split("\n  tinyauth:", 1)[0]
+        for alias in ("sonarr", "radarr", "prowlarr", "jellyfin"):
+            self.assertIn(f"          - {alias}\n", caddy)
+        for service in ("sonarr", "radarr", "jellyfin"):
+            self.assertNotIn(f"\n  {service}:\n", compose)
+        for port in ("80", "443", "5055", "9091"):
+            self.assertIn(f'"{port}:{port}/tcp"', caddy)
+        published = [line.strip() for line in compose.splitlines() if line.strip().startswith('- "') and ":" in line and "/" in line and "${" not in line and "./" not in line]
+        self.assertEqual(sorted(set(published)), sorted({
+            '- "6881:6881/tcp"', '- "6881:6881/udp"', '- "7359:7359/udp"',
+            '- "80:80/tcp"', '- "443:443/tcp"', '- "5055:5055/tcp"', '- "9091:9091/tcp"',
+        }))
+
+    def test_admin_apps_use_their_path_and_proxy_sign_in(self):
+        compose = (media_stack.ROOT / "compose.yaml").read_text(encoding="utf-8")
+        for app in ("SONARR", "RADARR", "PROWLARR"):
+            with self.subTest(app=app):
+                self.assertIn(f"{app}__SERVER__URLBASE: /{app.lower()}\n", compose)
+                self.assertIn(f"{app}__AUTH__METHOD: External\n", compose)
+        self.assertIn('JELLYFIN_PublishedServerUrl: "${ACCESS_URL}/jellyfin"', compose)
+        self.assertIn(f"- subnet: {media_stack.NETWORK_SUBNET}\n", compose)
 
     def test_homepage_reads_docker_only_through_read_only_proxy(self):
         compose = (media_stack.ROOT / "compose.yaml").read_text(encoding="utf-8")
@@ -689,31 +712,62 @@ class ComposeSecurityTests(unittest.TestCase):
         self.assertIn('POST: "0"', proxy)
         self.assertNotIn("ports:", proxy)
 
-    def test_other_services_start_before_vpn_services_wait_for_gateway(self):
+    def run_start_core_services(self, values, **options):
         events = []
-        values = {"VPN_GATEWAY_SERVICE": "gluetun"}
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        values = {"CONFIG_DIR": directory.name, **values}
         with patch("media_stack.compose", side_effect=lambda *args: events.append(args)), \
+             patch("media_stack.write_qbittorrent_login_bypass", side_effect=lambda _dir: events.append("qbittorrent-bypass")), \
+             patch("media_stack.jellyfin_base_url_is_set", return_value=True), \
              patch("media_stack.save_vpn_country_list", side_effect=lambda _values: events.append("countries")), \
              patch("media_stack.wait_for_vpn_gateway", side_effect=lambda _values: events.append("wait")):
-            media_stack.start_core_services(values)
-        self.assertEqual(events[0], ("stop", "qbittorrent", "prowlarr", "tailscale-vpn"))
-        self.assertEqual(events[1][:3], ("up", "-d", "--no-deps"))
-        self.assertIn("gluetun", events[1])
-        for service in ("dockerproxy", "homepage", "jellyfin", "sonarr", "radarr", "vpn-country"):
-            self.assertIn(service, events[1])
-        self.assertNotIn("qbittorrent", events[1])
-        self.assertNotIn("prowlarr", events[1])
-        self.assertEqual(events[2:4], ["countries", "wait"])
-        self.assertEqual(events[4], ("up", "-d", "--no-deps", "qbittorrent", "prowlarr"))
+            media_stack.start_core_services(values, **options)
+        return events
 
-    def test_changed_gateway_access_restarts_gateway_before_vpn_services(self):
+    def test_other_services_start_before_vpn_services_wait_for_gateway(self):
+        events = self.run_start_core_services({"VPN_GATEWAY_SERVICE": "gluetun"})
+        self.assertEqual(events[0], ("stop", "qbittorrent", "prowlarr", "tailscale-vpn"))
+        self.assertEqual(events[1], "qbittorrent-bypass")
+        self.assertEqual(events[2][:4], ("up", "-d", "--no-deps", "--remove-orphans"))
+        self.assertIn("gluetun", events[2])
+        for service in ("dockerproxy", "homepage", "caddy", "tinyauth", "jellyfin-app", "sonarr-app", "radarr-app", "vpn-country"):
+            self.assertIn(service, events[2])
+        self.assertNotIn("qbittorrent", events[2])
+        self.assertNotIn("prowlarr", events[2])
+        self.assertEqual(events[3:5], ["countries", "wait"])
+        self.assertEqual(events[5], ("up", "-d", "--no-deps", "qbittorrent", "prowlarr"))
+
+    def test_changed_gateway_access_and_proxy_restart_before_vpn_services(self):
+        events = self.run_start_core_services(
+            {"VPN_GATEWAY_SERVICE": "gluetun"}, restart_gateway=True, restart_proxy=True
+        )
+        self.assertEqual(events[3:5], [("restart", "gluetun"), ("restart", "caddy")])
+        self.assertEqual(events[-1], ("up", "-d", "--no-deps", "qbittorrent", "prowlarr"))
+
+    def test_only_a_network_with_another_address_range_is_recreated(self):
+        for subnet, expected in (
+            ("172.18.0.0/16", [("down", "--remove-orphans")]),
+            (media_stack.NETWORK_SUBNET, []),
+            (None, []),
+        ):
+            with self.subTest(subnet=subnet):
+                events = []
+                with patch("media_stack.stack_network_subnet", return_value=subnet), \
+                     patch("media_stack.compose", side_effect=lambda *args: events.append(args)):
+                    media_stack.recreate_network_if_needed()
+                self.assertEqual(events, expected)
+
+    def test_missing_jellyfin_base_url_is_written_while_jellyfin_is_stopped(self):
         events = []
-        with patch("media_stack.compose", side_effect=lambda *args: events.append(args)), \
+        with tempfile.TemporaryDirectory() as directory, \
+             patch("media_stack.compose", side_effect=lambda *args: events.append(args)), \
              patch("media_stack.save_vpn_country_list"), \
              patch("media_stack.wait_for_vpn_gateway"):
-            media_stack.start_core_services({"VPN_GATEWAY_SERVICE": "gluetun"}, restart_gateway=True)
-        self.assertEqual(events[2], ("restart", "gluetun"))
-        self.assertEqual(events[3], ("up", "-d", "--no-deps", "qbittorrent", "prowlarr"))
+            media_stack.start_core_services({"CONFIG_DIR": directory, "VPN_GATEWAY_SERVICE": "gluetun"})
+            self.assertTrue(media_stack.jellyfin_base_url_is_set(Path(directory)))
+        self.assertEqual(events[1], ("stop", "jellyfin-app"))
+        self.assertEqual(events[2][0], "up")
 
     def test_gluetun_access_file_reports_only_real_changes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -724,13 +778,10 @@ class ComposeSecurityTests(unittest.TestCase):
             self.assertTrue(media_stack.write_gluetun_auth(Path(directory), values))
 
     def test_tailscale_stops_and_skips_vpn_country_page(self):
-        events = []
-        with patch("media_stack.compose", side_effect=lambda *args: events.append(args)), \
-             patch("media_stack.save_vpn_country_list") as save_list, \
-             patch("media_stack.wait_for_vpn_gateway"):
-            media_stack.start_core_services({"VPN_GATEWAY_SERVICE": "tailscale-vpn"})
+        with patch("media_stack.save_vpn_country_list") as save_list:
+            events = self.run_start_core_services({"VPN_GATEWAY_SERVICE": "tailscale-vpn"})
         self.assertEqual(events[0], ("stop", "qbittorrent", "prowlarr", "gluetun", "vpn-country"))
-        self.assertNotIn("vpn-country", events[1])
+        self.assertNotIn("vpn-country", events[2])
         save_list.assert_not_called()
 
     def test_vpn_country_page_cannot_read_environment_file(self):
@@ -785,11 +836,11 @@ class ComposeSecurityTests(unittest.TestCase):
 
     @patch("media_stack.shutil.which", return_value="C:/Tailscale/tailscale.exe")
     @patch("media_stack.run")
-    def test_tailscale_dns_name_is_used_for_remote_access(self, run, _which):
+    def test_tailscale_dns_name_is_read_without_trailing_dot(self, run, _which):
         run.return_value.returncode = 0
         run.return_value.stdout = '{"Self":{"DNSName":"media.example.ts.net."}}'
         self.assertEqual(
-            media_stack.discover_access_host(), "media.example.ts.net"
+            media_stack.tailscale_dns_name(), "media.example.ts.net"
         )
 
 
@@ -923,24 +974,24 @@ class CredentialsTests(unittest.TestCase):
         self.assertEqual(values, saved)
 
     def test_group_without_changeable_values_does_not_ask(self):
-        saved = {"ADMIN_ACCESS_HOST": "media.example.ts.net", "MEDIA_DIR": "/media"}
+        saved = {"ACCESS_MODE": "local", "ACCESS_URL": "http://media.local", "MEDIA_DIR": "/media"}
         _code, output, _values = self.run_credentials(saved, "access")
-        self.assertEqual(output, "Host: media.example.ts.net\nMedia directory: /media\n")
+        self.assertEqual(output, "Mode: local\nAddress: http://media.local\nMedia directory: /media\n")
 
     def test_changed_password_is_confirmed_and_saved(self):
-        saved = {"QBIT_USER": "admin", "QBIT_PASS": "old"}
+        saved = {"ADMIN_USER": "admin", "ADMIN_PASS": "old"}
         code, output, values = self.run_credentials(
-            saved, "qbittorrent", ["y", ""], ["new", "typo", "new", "new"]
+            saved, "admin", ["y", ""], ["new", "typo", "new", "new"]
         )
         self.assertEqual(code, 0)
         self.assertIn("Values do not match.\n", output)
-        self.assertTrue(output.endswith("Saved.\n"))
-        self.assertEqual(values, {"QBIT_USER": "admin", "QBIT_PASS": "new"})
+        self.assertTrue(output.endswith("Saved.\nThe stack uses the changed values after its next start.\n"))
+        self.assertEqual(values, {"ADMIN_USER": "admin", "ADMIN_PASS": "new"})
 
     def test_api_key_is_validated_and_change_applies_at_next_start(self):
-        saved = {"SONARR_USER": "admin", "SONARR_PASS": "pass", "SONARR_API_KEY": "a" * 32}
+        saved = {"SONARR_API_KEY": "a" * 32}
         code, output, values = self.run_credentials(
-            saved, "sonarr", ["y", "", "not-a-key", "B" * 32], [""]
+            saved, "sonarr", ["y", "not-a-key", "B" * 32]
         )
         self.assertEqual(code, 0)
         self.assertIn("Error: API keys must contain exactly 32 hexadecimal characters.", output)
@@ -1008,6 +1059,233 @@ class JellyfinRenameTests(unittest.TestCase):
         media_stack.ensure_credentials(values, ("JELLYFIN_ADMIN",))
         prompt_input.assert_called_once_with("Jellyfin administrator username [admin]: ")
         self.assertEqual(values, {"JELLYFIN_ADMIN_USER": "admin", "JELLYFIN_ADMIN_PASS": "secret"})
+
+
+class ProxyConfigTests(unittest.TestCase):
+    def access_values(self, mode, host, gateway="gluetun"):
+        values = {"ACCESS_MODE": mode, "ADMIN_ACCESS_HOST": host, "VPN_GATEWAY_SERVICE": gateway}
+        media_stack.apply_access_values(values)
+        return values
+
+    def test_qbittorrent_bypass_keeps_other_settings_and_is_set_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_dir = Path(directory)
+            path = media_stack.qbittorrent_config_file(config_dir)
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                "[BitTorrent]\nSession\\DefaultSavePath=/media/Downloads\n"
+                "[Preferences]\nWebUI\\Port=8080\nWebUI\\AuthSubnetWhitelist=10.0.0.0/8\n"
+                "[Meta]\nMigrationVersion=9999\n",
+                encoding="utf-8",
+            )
+            self.assertTrue(media_stack.write_qbittorrent_login_bypass(config_dir))
+            self.assertEqual(
+                path.read_text(encoding="utf-8"),
+                "[BitTorrent]\nSession\\DefaultSavePath=/media/Downloads\n"
+                "[Preferences]\nWebUI\\Port=8080\nWebUI\\AuthSubnetWhitelistEnabled=true\n"
+                f"WebUI\\AuthSubnetWhitelist={media_stack.NETWORK_SUBNET}\n"
+                "[Meta]\nMigrationVersion=9999\n",
+            )
+            self.assertFalse(media_stack.write_qbittorrent_login_bypass(config_dir))
+
+    def test_qbittorrent_bypass_creates_missing_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_dir = Path(directory)
+            self.assertTrue(media_stack.write_qbittorrent_login_bypass(config_dir))
+            self.assertEqual(
+                media_stack.qbittorrent_config_file(config_dir).read_text(encoding="utf-8"),
+                "[Preferences]\nWebUI\\AuthSubnetWhitelistEnabled=true\n"
+                f"WebUI\\AuthSubnetWhitelist={media_stack.NETWORK_SUBNET}\n",
+            )
+
+    def test_jellyfin_base_url_keeps_other_network_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_dir = Path(directory)
+            path = media_stack.jellyfin_network_file(config_dir)
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                '<?xml version="1.0" encoding="utf-8"?>\n'
+                '<NetworkConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+                'xmlns:xsd="http://www.w3.org/2001/XMLSchema">\n'
+                "  <BaseUrl />\n  <EnableHttps>false</EnableHttps>\n  <InternalHttpPort>8096</InternalHttpPort>\n"
+                "</NetworkConfiguration>\n",
+                encoding="utf-8",
+            )
+            self.assertFalse(media_stack.jellyfin_base_url_is_set(config_dir))
+            media_stack.write_jellyfin_base_url(config_dir)
+            self.assertTrue(media_stack.jellyfin_base_url_is_set(config_dir))
+            root = media_stack.ElementTree.parse(path).getroot()
+            self.assertEqual(root.findtext("EnableHttps"), "false")
+            self.assertEqual(root.findtext("InternalHttpPort"), "8096")
+
+    def test_jellyfin_base_url_creates_missing_network_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_dir = Path(directory)
+            media_stack.write_jellyfin_base_url(config_dir)
+            root = media_stack.ElementTree.parse(media_stack.jellyfin_network_file(config_dir)).getroot()
+            self.assertEqual(root.tag, "NetworkConfiguration")
+            self.assertEqual(root.findtext("BaseUrl"), "/jellyfin")
+
+    def test_jellyfin_stays_outside_the_sign_in_and_admin_pages_inside(self):
+        text = media_stack.caddyfile(self.access_values("tailscale", "media.example.ts.net"))
+        site = text.split("\nmedia.example.ts.net:5055 {", 1)[0]
+        public, protected = site.split("\thandle {\n\t\tforward_auth tinyauth:3000 {", 1)
+        self.assertIn("handle @jellyfin {\n\t\treverse_proxy jellyfin-app:8096", public)
+        self.assertIn("redir @seerr https://media.example.ts.net:5055/", public)
+        for upstream in ("sonarr-app:8989", "radarr-app:7878", "gluetun:9696", "gluetun:8080", "vpn-country:8090", "homepage:3000"):
+            self.assertNotIn(upstream, public)
+            self.assertIn(f"reverse_proxy {upstream}", protected)
+
+    def test_internal_addresses_add_the_path_only_when_missing(self):
+        text = media_stack.caddyfile(self.access_values("local", "media.local", "tailscale-vpn"))
+        for port, path, upstream in (
+            (8989, "/sonarr", "sonarr-app"),
+            (7878, "/radarr", "radarr-app"),
+            (9696, "/prowlarr", "tailscale-vpn"),
+            (8096, "/jellyfin", "jellyfin-app"),
+        ):
+            self.assertIn(
+                f"http://:{port} {{\n\t@missing not path {path} {path}/*\n"
+                f"\trewrite @missing {path}{{uri}}\n\treverse_proxy {upstream}:{port}\n}}",
+                text,
+            )
+        self.assertNotIn("vpn-country", text)
+
+    def test_each_access_mode_sets_its_address_scheme_and_certificate(self):
+        tls = "\ttls /certs/cert.pem /certs/key.pem\n"
+        cases = (
+            ("tailscale", "media.example.ts.net", "media.example.ts.net {\n" + tls, 3),
+            ("domain", "media.example.com", "media.example.com {\n", 0),
+            ("local", "media.local", "http://media.local {\n", 0),
+        )
+        for mode, host, site, tls_count in cases:
+            with self.subTest(mode=mode):
+                text = media_stack.caddyfile(self.access_values(mode, host))
+                self.assertIn("\n" + site, text)
+                self.assertEqual(text.count(tls), tls_count)
+                prefix = "http://" if mode == "local" else ""
+                self.assertIn(f"\n{prefix}{host}:{media_stack.SEERR_PORT} {{", text)
+                self.assertIn(f"\n{prefix}{host}:{media_stack.SIGN_IN_PORT} {{", text)
+
+    def test_certificate_change_is_reported_only_when_files_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            values = {"ACCESS_MODE": "tailscale", "ADMIN_ACCESS_HOST": "media.example.ts.net", "CONFIG_DIR": directory}
+            issued = {"content": b"first"}
+
+            def fake_run(command, **_options):
+                Path(command[command.index("--cert-file") + 1]).write_bytes(issued["content"])
+                Path(command[command.index("--key-file") + 1]).write_bytes(issued["content"])
+                return media_stack.subprocess.CompletedProcess(command, 0, "", "")
+
+            with patch("media_stack.shutil.which", return_value="/usr/bin/tailscale"), \
+                 patch("media_stack.tailscale_serve_uses_https_port", return_value=False), \
+                 patch("media_stack.run", side_effect=fake_run):
+                self.assertTrue(media_stack.renew_tailscale_certificate(values))
+                self.assertFalse(media_stack.renew_tailscale_certificate(values))
+                issued["content"] = b"renewed"
+                self.assertTrue(media_stack.renew_tailscale_certificate(values))
+
+    def test_tailscale_serve_on_https_port_blocks_tailscale_mode(self):
+        serve_status = '{"TCP": {"443": {"HTTPS": true}}, "Web": {"media.example.ts.net:443": {}}}'
+        result = media_stack.subprocess.CompletedProcess((), 0, serve_status, "")
+        values = {"ACCESS_MODE": "tailscale", "ADMIN_ACCESS_HOST": "media.example.ts.net", "CONFIG_DIR": "/unused"}
+        with patch("media_stack.shutil.which", return_value="/usr/bin/tailscale"), \
+             patch("media_stack.run", return_value=result):
+            with self.assertRaisesRegex(media_stack.StackError, "tailscale serve reset"):
+                media_stack.renew_tailscale_certificate(values)
+        output = io.StringIO()
+        with patch("media_stack.tailscale_dns_name", return_value="media.example.ts.net"), \
+             patch("media_stack.tailscale_serve_uses_https_port", return_value=True), \
+             patch("media_stack.socket.gethostname", return_value="media-box"), \
+             patch("builtins.input", side_effect=("1", "3", "")), \
+             contextlib.redirect_stdout(output):
+            media_stack.ensure_access_config(values := {})
+        self.assertIn("\ntailscale serve reset\n", output.getvalue())
+        self.assertEqual(values["ACCESS_MODE"], "local")
+
+    def test_other_access_modes_do_not_request_a_tailscale_certificate(self):
+        with patch("media_stack.run") as run:
+            self.assertFalse(media_stack.renew_tailscale_certificate({"ACCESS_MODE": "domain"}))
+        run.assert_not_called()
+
+
+class SignInTests(unittest.TestCase):
+    HASH = "$2a$10$blxk23tgU0Z6eUuBbooKXesaHLxgm0N2biNh5nsDWU70Bs.R2ihtq"
+
+    def test_admin_login_is_hashed_from_either_tinyauth_output_format(self):
+        outputs = (
+            f"\x1b[38;5;75mauth\x1b[m:\n    users:\n        - boss:{self.HASH}\n",
+            f"Created user 'boss'.\n\nEnvironment variable:\n\nTINYAUTH_AUTH_USERS=boss:{self.HASH}\n",
+        )
+        for output in outputs:
+            with self.subTest(output=output[:20]):
+                values = {"ADMIN_USER": "boss", "ADMIN_PASS": "secret"}
+                result = media_stack.subprocess.CompletedProcess((), 0, output, "")
+                with patch("media_stack.compose", return_value=result) as compose:
+                    self.assertTrue(media_stack.ensure_tinyauth_users(values))
+                self.assertEqual(values["TINYAUTH_USERS"], f"boss:{self.HASH}")
+                self.assertIn("secret", compose.call_args.args)
+
+    def test_hash_is_only_recreated_when_the_admin_login_changes(self):
+        values = {"ADMIN_USER": "boss", "ADMIN_PASS": "secret"}
+        result = media_stack.subprocess.CompletedProcess((), 0, f"boss:{self.HASH}\n", "")
+        with patch("media_stack.compose", return_value=result) as compose:
+            self.assertTrue(media_stack.ensure_tinyauth_users(values))
+            self.assertFalse(media_stack.ensure_tinyauth_users(values))
+            values["ADMIN_PASS"] = "changed"
+            self.assertTrue(media_stack.ensure_tinyauth_users(values))
+        self.assertEqual(compose.call_count, 2)
+
+    def test_failed_hashing_is_reported(self):
+        result = media_stack.subprocess.CompletedProcess((), 1, "", "pull access denied")
+        with patch("media_stack.compose", return_value=result):
+            with self.assertRaisesRegex(media_stack.StackError, "admin sign-in"):
+                media_stack.ensure_tinyauth_users({"ADMIN_USER": "boss", "ADMIN_PASS": "secret"})
+
+
+class AccessModeTests(unittest.TestCase):
+    def test_local_mode_proposes_machine_name_and_rejects_dotless_names(self):
+        values = {}
+        output = io.StringIO()
+        with patch("media_stack.socket.gethostname", return_value="media-box"), \
+             patch("builtins.input", side_effect=("3", "media-box", "")) as prompt, \
+             contextlib.redirect_stdout(output):
+            media_stack.ensure_access_config(values)
+        self.assertEqual(prompt.call_args.args[0], "Local network name [media-box.local]: ")
+        self.assertIn("Error: The address must be a name containing a dot", output.getvalue())
+        self.assertEqual(values["ACCESS_MODE"], "local")
+        self.assertEqual(values["ADMIN_ACCESS_HOST"], "media-box.local")
+        self.assertEqual(values["ACCESS_URL"], "http://media-box.local")
+        self.assertEqual(values["TINYAUTH_SECURE_COOKIE"], "false")
+
+    def test_mode_guide_and_domain_guide_precede_their_prompts(self):
+        values = {}
+        events = []
+
+        def answer(prompt):
+            events.append(("prompt", prompt, output.getvalue()))
+            return {"Select an access mode [1]: ": "2", "Domain name: ": "Media.Example.com"}[prompt]
+
+        output = io.StringIO()
+        with patch("builtins.input", side_effect=answer), contextlib.redirect_stdout(output):
+            media_stack.ensure_access_config(values)
+        self.assertIn("Pros:", events[0][2])
+        self.assertIn("Cons:", events[0][2])
+        self.assertIn("forward TCP ports 80, 443, 5055, and 9091", events[1][2])
+        self.assertEqual(values["ADMIN_ACCESS_HOST"], "media.example.com")
+        self.assertEqual(values["ACCESS_URL"], "https://media.example.com")
+        self.assertEqual(values["TINYAUTH_SECURE_COOKIE"], "true")
+
+    def test_tailscale_mode_requires_a_signed_in_tailscale(self):
+        values = {}
+        output = io.StringIO()
+        with patch("media_stack.tailscale_dns_name", return_value=""), \
+             patch("builtins.input", side_effect=("1", "3", "")), \
+             patch("media_stack.socket.gethostname", return_value="media-box"), \
+             contextlib.redirect_stdout(output):
+            media_stack.ensure_access_config(values)
+        self.assertIn("Tailscale is not installed or not signed in on this computer. Choose another mode.", output.getvalue())
+        self.assertEqual(values["ACCESS_MODE"], "local")
 
 
 class CommandHelpTests(unittest.TestCase):

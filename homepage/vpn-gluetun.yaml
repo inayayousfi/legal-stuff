@@ -3,7 +3,7 @@
         description: qBittorrent and Prowlarr VPN connection
         server: media-stack
         container: gluetun
-        href: http://{{HOMEPAGE_VAR_HOST}}:8090
+        href: "{{HOMEPAGE_VAR_URL}}/vpn-country/"
         widget:
           type: gluetun
           url: http://gluetun:8000

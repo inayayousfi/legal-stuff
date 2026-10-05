@@ -1,6 +1,6 @@
 # Media Stack
 
-A local Docker Compose stack for Jellyfin, qBittorrent, Prowlarr, Sonarr, Radarr, Recyclarr, and a Homepage dashboard.
+A local Docker Compose stack for Jellyfin, qBittorrent, Prowlarr, Sonarr, Radarr, Recyclarr, and a Homepage dashboard, served through one address by the Caddy reverse proxy.
 
 Every media-aware container sees the same `/media` path. This avoids remote path mappings and allows hardlinks between downloads and libraries.
 
@@ -10,23 +10,39 @@ The setup supports Windows with Docker Desktop and native Linux.
 
 | Service | Purpose | Address |
 | --- | --- | --- |
-| Homepage | Links, container status, VPN status and Docker resource overview | `http://HOSTNAME:3000` |
+| Homepage | Links, container status, VPN status and Docker resource overview | `ADDRESS/` |
+| Caddy | Reverse proxy, HTTPS, and the single entry point for every web page | No web interface |
+| Tinyauth | Admin sign-in page shared by the administration pages | `ADDRESS:9091` |
 | Docker socket proxy | Read-only container status for Homepage | No web interface |
 | Gluetun or Tailscale | Selectable qBittorrent VPN gateway | No web interface |
-| Jellyfin | Media server | `http://HOSTNAME:8096` |
-| Seerr | Movie and series requests sent to Radarr and Sonarr | `http://HOSTNAME:5055` |
-| VPN country | Gluetun country selection, linked from Homepage's VPN card | `http://HOSTNAME:8090` |
-| qBittorrent | Download client | `http://HOSTNAME:8080` |
-| Prowlarr | Indexer manager | `http://HOSTNAME:9696` |
-| Sonarr | Series manager | `http://HOSTNAME:8989` |
-| Radarr | Movie manager | `http://HOSTNAME:7878` |
+| Jellyfin | Media server | `ADDRESS/jellyfin` |
+| Seerr | Movie and series requests sent to Radarr and Sonarr | `ADDRESS:5055`, also opened by `ADDRESS/seerr` |
+| VPN country | Gluetun country selection, linked from Homepage's VPN card | `ADDRESS/vpn-country/` |
+| qBittorrent | Download client | `ADDRESS/qbittorrent/` |
+| Prowlarr | Indexer manager | `ADDRESS/prowlarr` |
+| Sonarr | Series manager | `ADDRESS/sonarr` |
+| Radarr | Movie manager | `ADDRESS/radarr` |
 | Recyclarr | Quality profile synchronization | No web interface |
 
-Jellyfin and the administration interfaces listen on every host network connection. On a Tailscale host, setup detects its MagicDNS name and prints the complete remote addresses. Protect every account with a strong password.
+`ADDRESS` depends on the access mode chosen during setup:
 
-The qBittorrent traffic port `6881` remains exposed for incoming torrent connections.
+| Access mode | Address | Reachable from |
+| --- | --- | --- |
+| Tailscale HTTPS certificate | `https://MACHINE.TAILNET.ts.net` | Devices signed in to the same Tailscale network |
+| Own domain with a Let's Encrypt certificate | `https://media.example.com` | The whole internet, through router port forwarding |
+| Local network name without encryption | `http://MACHINE.local` | The local network, unencrypted |
 
-qBittorrent and Prowlarr have no independent container network connection. They share the selected VPN gateway, so torrent traffic and indexer searches leave through the VPN and bypass internet-provider DNS blocking. Sonarr and Radarr continue to use `qbittorrent` and `prowlarr` as host names; both names point to the active gateway's shared network location. When the VPN is down, Prowlarr is unreachable, so Sonarr and Radarr cannot search.
+Tailscale mode requires that Tailscale Serve does not already use HTTPS port `443` on the computer; setup and `start` stop with the removal command when it does.
+
+Caddy publishes ports `80`, `443`, `5055` (Seerr), and `9091` (sign-in). The other web interfaces no longer publish their own ports. In own-domain mode, forward TCP ports `80`, `443`, `5055`, and `9091` from the router to this computer.
+
+One admin username and password protect Homepage, qBittorrent, Sonarr, Radarr, Prowlarr, and the VPN country page. Those applications no longer ask for their own logins: Sonarr, Radarr, and Prowlarr use their `External` authentication method, and qBittorrent skips its login for the stack's Docker network (`172.31.250.0/24`). Jellyfin and Seerr keep their own logins, because Jellyfin's phone and TV applications cannot pass the admin sign-in and Seerr is meant for the people who request media.
+
+Containers keep reaching each other through `sonarr:8989`, `radarr:7878`, `prowlarr:9696`, and `jellyfin:8096`. Those names belong to Caddy, which adds each application's path only when the address lacks it. Saved addresses in Prowlarr, Seerr, Recyclarr, and the Jellyfin notifications therefore need no path.
+
+The qBittorrent traffic port `6881` remains exposed for incoming torrent connections. Jellyfin's discovery port `7359/udp` remains open, and Jellyfin announces `ADDRESS/jellyfin` to the applications that discover it.
+
+qBittorrent and Prowlarr have no independent container network connection. They share the selected VPN gateway, so torrent traffic and indexer searches leave through the VPN and bypass internet-provider DNS blocking. Sonarr and Radarr continue to use `qbittorrent` and `prowlarr` as host names. `qbittorrent` points to the active gateway's shared network location, and `prowlarr` points to Caddy, which forwards to that location. When the VPN is down, Prowlarr is unreachable, so Sonarr and Radarr cannot search.
 
 Setup offers NordVPN, Proton VPN, Surfshark, Private Internet Access, a Tailscale exit node, and another Gluetun OpenVPN provider. The Gluetun choices use OpenVPN UDP and no country filter by default. Gluetun selects from all matching provider servers.
 
@@ -44,7 +60,7 @@ The selected gateway and its required secrets are stored in `.env`. Gluetun's fi
 
 NordVPN does not provide inbound port forwarding. Downloads still work, but incoming peer connectivity and seeding can be weaker than with a provider that supports a forwarded torrent port.
 
-Homepage provides one page with links to every web interface and the running state of each container. Jellyfin and Seerr appear first; the administration interfaces and the VPN status are in a folded Admin group. It reads that state through a socket proxy that allows only read requests about containers, so Homepage cannot start, stop or create containers. With Gluetun, a VPN panel shows the public address and country through Gluetun's control server. Setup generates the key for that panel and allows it to read only the public address. The VPN country page lists the provider's OpenVPN countries from the installed Gluetun, reconnects Gluetun to the selected country without restarting qBittorrent or Prowlarr, and saves the choice in `config/vpn-country`. `start` copies that choice into `.env` before starting Gluetun, and the page reapplies it if Gluetun restarts with another country. The page has its own Gluetun key, limited to reading the public address and reading or changing VPN settings, and it cannot read `.env`. Anyone who can open the page can change the VPN country. Its Glances widget reports CPU and memory use from Docker's Linux environment, not the complete Windows host. Its media-disk figure reports the capacity and free space of the filesystem containing the selected media directory, not only the size of files inside that directory. Network usage is omitted because accurate Docker-environment network totals require broader container permissions.
+Homepage provides one page with links to every web interface and the running state of each container. Jellyfin and Seerr appear first; the administration interfaces and the VPN status are in a folded Admin group. It reads that state through a socket proxy that allows only read requests about containers, so Homepage cannot start, stop or create containers. With Gluetun, a VPN panel shows the public address and country through Gluetun's control server. Setup generates the key for that panel and allows it to read only the public address. The VPN country page lists the provider's OpenVPN countries from the installed Gluetun, reconnects Gluetun to the selected country without restarting qBittorrent or Prowlarr, and saves the choice in `config/vpn-country`. `start` copies that choice into `.env` before starting Gluetun, and the page reapplies it if Gluetun restarts with another country. The page has its own Gluetun key, limited to reading the public address and reading or changing VPN settings, and it cannot read `.env`. The admin sign-in protects the page. Its Glances widget reports CPU and memory use from Docker's Linux environment, not the complete Windows host. Its media-disk figure reports the capacity and free space of the filesystem containing the selected media directory, not only the size of files inside that directory. Network usage is omitted because accurate Docker-environment network totals require broader container permissions.
 
 ## Media layout
 
@@ -109,16 +125,18 @@ The script performs these checks and actions:
 2. Asks for the media directory.
 3. Presents a `Y/n` confirmation for the qBittorrent legal notice.
 4. Offers the supported VPN gateways, shows the selected credential instructions, and requests only that gateway's required values.
-5. Creates the media and configuration directories.
-6. Writes the initial local `.env`, starts the selected VPN gateway, the Docker socket proxy, Homepage, Glances, Jellyfin, Sonarr, Radarr, and Seerr, then starts qBittorrent and Prowlarr once the VPN route is ready.
-7. Displays qBittorrent's generated `admin` password and remote Web UI address.
-8. Requests each permanent administration login only when its application is ready to configure.
-9. Stores the chosen local administration credentials in `.env` and saves progress after each manual step.
-10. Requests the Sonarr and Radarr API keys.
-11. Requests the Jellyfin API key and shows the steps that make Radarr and Sonarr refresh Jellyfin after each import.
-12. Applies the Recyclarr profiles.
-13. Shows the Seerr connection steps with the saved Jellyfin login and the Sonarr and Radarr API keys.
-14. Installs automatic startup.
+5. Shows the pros and cons of the 3 access modes, then requests the mode and its address. Tailscale mode uses this computer's Tailscale name. Own-domain mode requests the domain name. Local mode proposes `MACHINE.local` and accepts another name containing a dot.
+6. Requests the admin username and password that protect the administration pages.
+7. Creates the media and configuration directories.
+8. Writes the initial local `.env` and creates the admin sign-in. In Tailscale mode on Linux, it runs `sudo tailscale set --operator=USER` once, so later starts can renew the certificate without a password, then fetches the certificate.
+9. Writes Caddy's configuration, Jellyfin's `/jellyfin` base URL, and qBittorrent's login bypass for the stack's Docker network.
+10. Starts the selected VPN gateway, Caddy, Tinyauth, the Docker socket proxy, Homepage, Glances, Jellyfin, Sonarr, Radarr, and Seerr, then starts qBittorrent and Prowlarr once the VPN route is ready.
+11. Shows each application's address and setup steps, starting with the admin sign-in values, and saves progress after each manual step.
+12. Requests the Sonarr and Radarr API keys.
+13. Requests the Jellyfin API key and shows the steps that make Radarr and Sonarr refresh Jellyfin after each import.
+14. Applies the Recyclarr profiles.
+15. Shows the Seerr connection steps with the saved Jellyfin login and the Sonarr and Radarr API keys.
+16. Installs automatic startup.
 
 Setup reuses values already present in `.env`, including credentials and API keys. Existing application configuration under `config/` remains available.
 
@@ -130,43 +148,39 @@ Leading and trailing spaces are removed from the media-directory input. Password
 
 The Python script prints these instructions during setup.
 
+The first administration page asks for the admin sign-in. One sign-in covers every administration page for 24 hours.
+
 ### qBittorrent
 
-Open this link:
+Open:
 
 ```text
-http://localhost:8080
+ADDRESS/qbittorrent/
 ```
 
-The script reads the generated temporary password from the container logs and displays it with the `admin` username. On a fresh setup, setup stops with an error if it cannot obtain this password instead of continuing without a usable login.
+qBittorrent skips its own login for the stack, so no temporary password is needed.
 
-The CLI stores the chosen username and password as `QBIT_USER` and `QBIT_PASS` in `.env` as a private reference. After signing in with the temporary `admin` login:
-
-1. Open `Tools > Options > Web UI`.
-2. Under `Authentication`, replace the temporary username and password with the username and password chosen in the CLI.
-3. Open the `Downloads` section.
-4. Set `Saving Management > Default Save Path` to `/media/Downloads`.
-5. Set `Keep incomplete torrents in` to `/media/Downloads/incomplete`.
-6. Click `Save`.
+1. Open `Tools > Options > Downloads`.
+2. Set `Saving Management > Default Save Path` to `/media/Downloads`.
+3. Set `Keep incomplete torrents in` to `/media/Downloads/incomplete`.
+4. Click `Save`.
 
 ### Sonarr
 
 Open:
 
 ```text
-http://localhost:8989
+ADDRESS/sonarr
 ```
 
-1. Complete first-run authentication with the username and password requested by the CLI.
-2. Open `Settings > Media Management`.
-3. Under `Root Folders`, click `Add Root Folder`.
-4. Select `/media/Series` and save it.
-5. Open `Settings > Download Clients`.
-6. Click `Add`, then select qBittorrent.
-7. Set `Host` to `qbittorrent` and `Port` to `8080`.
-8. Use the username and password chosen during qBittorrent setup.
-9. Set `Category` to `sonarr`.
-10. Click `Test`, then `Save`.
+1. Open `Settings > Media Management`.
+2. Under `Root Folders`, click `Add Root Folder`.
+3. Select `/media/Series` and save it.
+4. Open `Settings > Download Clients`.
+5. Click `Add`, then select qBittorrent.
+6. Set `Host` to `qbittorrent` and `Port` to `8080`. Leave `Username` and `Password` empty.
+7. Set `Category` to `sonarr`.
+8. Click `Test`, then `Save`.
 
 Use `qbittorrent`, not `localhost`. Inside the Sonarr container, `localhost` means Sonarr itself.
 
@@ -181,19 +195,17 @@ Settings > General > Security > API Key
 Open:
 
 ```text
-http://localhost:7878
+ADDRESS/radarr
 ```
 
-1. Complete first-run authentication with the username and password requested by the CLI.
-2. Open `Settings > Media Management`.
-3. Under `Root Folders`, click `Add Root Folder`.
-4. Select `/media/Movies` and save it.
-5. Open `Settings > Download Clients`.
-6. Click `Add`, then select qBittorrent.
-7. Set `Host` to `qbittorrent` and `Port` to `8080`.
-8. Use the username and password chosen during qBittorrent setup.
-9. Set `Category` to `radarr`.
-10. Click `Test`, then `Save`.
+1. Open `Settings > Media Management`.
+2. Under `Root Folders`, click `Add Root Folder`.
+3. Select `/media/Movies` and save it.
+4. Open `Settings > Download Clients`.
+5. Click `Add`, then select qBittorrent.
+6. Set `Host` to `qbittorrent` and `Port` to `8080`. Leave `Username` and `Password` empty.
+7. Set `Category` to `radarr`.
+8. Click `Test`, then `Save`.
 
 Radarr creates its API key automatically. Copy it from:
 
@@ -206,37 +218,37 @@ Settings > General > Security > API Key
 Open:
 
 ```text
-http://localhost:9696
+ADDRESS/prowlarr
 ```
 
-1. Complete first-run authentication with the username and password requested by the CLI.
-2. Open `Settings > Apps`.
-3. Add Sonarr with `Full Sync`.
-4. Set `Prowlarr Server` to `http://prowlarr:9696`.
-5. Set `Sonarr Server` to `http://sonarr:8989`.
-6. Use the Sonarr API key copied during Sonarr setup, then test and save.
-7. Add Radarr with `Full Sync`.
-8. Set `Prowlarr Server` to `http://prowlarr:9696`.
-9. Set `Radarr Server` to `http://radarr:7878`.
-10. Use the Radarr API key copied during Radarr setup, then test and save.
-11. Open `Indexers`, add your indexers, then test each one.
+1. Open `Settings > Apps`.
+2. Add Sonarr with `Full Sync`.
+3. Set `Prowlarr Server` to `http://prowlarr:9696`.
+4. Set `Sonarr Server` to `http://sonarr:8989`.
+5. Use the Sonarr API key copied during Sonarr setup, then test and save.
+6. Add Radarr with `Full Sync`.
+7. Set `Prowlarr Server` to `http://prowlarr:9696`.
+8. Set `Radarr Server` to `http://radarr:7878`.
+9. Use the Radarr API key copied during Radarr setup, then test and save.
+10. Open `Indexers`, add your indexers, then test each one.
 
 ### Jellyfin
 
 Open:
 
 ```text
-http://localhost:8096
+ADDRESS/jellyfin
 ```
 
 1. Select the display language.
 2. Create the Jellyfin administrator account.
-3. Use a different password from the other applications.
-4. Add a Movies library using `/media/Movies`.
-5. Add a Shows library using `/media/Series`.
-6. Complete the remaining setup wizard pages.
-7. Open `Dashboard > API Keys`, click `New API Key`, set `App name` to `Radarr and Sonarr`, then click `Create`.
-8. Copy the generated key; setup saves it as `JELLYFIN_API_KEY`.
+3. Add a Movies library using `/media/Movies`.
+4. Add a Shows library using `/media/Series`.
+5. Complete the remaining setup wizard pages.
+6. Open `Dashboard > API Keys`, click `New API Key`, set `App name` to `Radarr and Sonarr`, then click `Create`.
+7. Copy the generated key; setup saves it as `JELLYFIN_API_KEY`.
+
+Jellyfin applications on phones and TVs connect to `ADDRESS/jellyfin`.
 
 ### Jellyfin notifications
 
@@ -256,7 +268,7 @@ Files added to the media folders by hand still appear only after Jellyfin's sche
 Open:
 
 ```text
-http://localhost:5055
+ADDRESS:5055
 ```
 
 1. Choose Jellyfin as the server type, with `jellyfin` as the Jellyfin URL and `8096` as the port.
@@ -340,11 +352,12 @@ List saved groups, or display one group (including any saved password or API key
 
 ```bash
 python3 media_stack.py credentials
+python3 media_stack.py credentials admin
 python3 media_stack.py credentials jellyfin
 python3 media_stack.py credentials vpn
 ```
 
-After the values are shown, answer `y` to replace credentials one by one; press Enter to keep a saved value. Answer `n` or press Enter to leave everything unchanged. This updates `.env` only, so change the password in the application as well. VPN credentials and the Sonarr and Radarr API keys take effect at the next `start`. The Jellyfin values belong to the administrator account, which can create other Jellyfin users and reset their passwords in Jellyfin's Dashboard. The values appear in the terminal, so use this on a private screen.
+After the values are shown, answer `y` to replace credentials one by one; press Enter to keep a saved value. Answer `n` or press Enter to leave everything unchanged. For Jellyfin and the VPN, this updates `.env` only, so change the password in the application as well. The admin username and password, VPN credentials, and the Sonarr and Radarr API keys take effect at the next `start`; the admin sign-in needs no other change. The Jellyfin values belong to the administrator account, which can create other Jellyfin users and reset their passwords in Jellyfin's Dashboard. The values appear in the terminal, so use this on a private screen.
 
 Stop the stack:
 
@@ -441,7 +454,7 @@ config/
 Media/
 ```
 
-The `.env` file contains the qBittorrent, Sonarr, Radarr, and Prowlarr credentials, plus the Sonarr and Radarr API keys. These stored credentials are a local reference; the containers do not use them to configure application authentication. Do not commit or share this file.
+The `.env` file contains the admin sign-in, the Jellyfin administrator login, the VPN credentials, and the Sonarr, Radarr, and Jellyfin API keys. The stack uses the admin sign-in and the VPN credentials directly; the Jellyfin login is a local reference. Do not commit or share this file.
 
 The `recyclarr/recyclarr.yml` file contains no secrets and remains tracked by Git.
 
@@ -457,8 +470,12 @@ An older `.env` also remains accessible in the public Git history. Credentials f
 
 qBittorrent is routed through the selected gateway. Gluetun requires `NET_ADMIN`; the Tailscale gateway requires `NET_ADMIN` and `NET_RAW`. Both require access to `/dev/net/tun`. No other application service shares that gateway network.
 
-Jellyfin is available to the local network. Protect its administrator account with a strong password.
+Every web page goes through Caddy. The admin sign-in protects Homepage, qBittorrent, Sonarr, Radarr, Prowlarr, and the VPN country page, which do not ask for their own logins. Containers on the stack's Docker network reach those applications without signing in, so do not attach other containers to that network. Jellyfin and Seerr keep their own logins; protect the Jellyfin administrator account with a strong password.
 
-Sonarr, Radarr, Prowlarr, and qBittorrent are accessible through every network connected to the Docker host. Use strong, distinct passwords and restrict host firewall access if a connected network is not trusted.
+In own-domain mode, every page is reachable from the internet. In local mode, passwords and pages cross the local network unencrypted.
+
+In Tailscale mode on Linux, setup makes the current user Tailscale's operator, so that user can change Tailscale settings without `sudo`. `start` renews the 90-day certificate; the certificate expires if `start` does not run for that long.
+
+Tinyauth's redirect warnings are disabled because the sign-in page uses its own port. After signing in, Tinyauth returns to any address in the sign-in link without a warning.
 
 Jellyfin does not officially support Docker on Windows or macOS. This does not mean it cannot work, so the setup remains worth trying. Some features, particularly hardware-accelerated transcoding, may still fail on those hosts.

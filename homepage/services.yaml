@@ -3,37 +3,37 @@
     - Jellyfin:
         icon: jellyfin.png
         server: media-stack
-        container: jellyfin
-        href: http://{{HOMEPAGE_VAR_HOST}}:8096
+        container: jellyfin-app
+        href: "{{HOMEPAGE_VAR_URL}}/jellyfin"
         description: Watch movies and series
     - Seerr:
         icon: seerr.png
         server: media-stack
         container: seerr
-        href: http://{{HOMEPAGE_VAR_HOST}}:5055
+        href: "{{HOMEPAGE_VAR_URL}}/seerr"
         description: Request movies and series
 - Admin:
     - qBittorrent:
         icon: qbittorrent.png
         server: media-stack
         container: qbittorrent
-        href: http://{{HOMEPAGE_VAR_HOST}}:8080
+        href: "{{HOMEPAGE_VAR_URL}}/qbittorrent/"
         description: Manage downloads
     - Sonarr:
         icon: sonarr.png
         server: media-stack
-        container: sonarr
-        href: http://{{HOMEPAGE_VAR_HOST}}:8989
+        container: sonarr-app
+        href: "{{HOMEPAGE_VAR_URL}}/sonarr"
         description: Manage series
     - Radarr:
         icon: radarr.png
         server: media-stack
-        container: radarr
-        href: http://{{HOMEPAGE_VAR_HOST}}:7878
+        container: radarr-app
+        href: "{{HOMEPAGE_VAR_URL}}/radarr"
         description: Manage movies
     - Prowlarr:
         icon: prowlarr.png
         server: media-stack
         container: prowlarr
-        href: http://{{HOMEPAGE_VAR_HOST}}:9696
+        href: "{{HOMEPAGE_VAR_URL}}/prowlarr"
         description: Manage indexers

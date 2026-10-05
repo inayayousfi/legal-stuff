@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import hashlib
 import json
 import os
 import re
@@ -16,8 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.error
-import urllib.request
+import xml.etree.ElementTree as ElementTree
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
@@ -30,16 +30,25 @@ CORE_SERVICES = (
     "dockerproxy",
     "homepage",
     "glances",
-    "jellyfin",
+    "caddy",
+    "tinyauth",
+    "jellyfin-app",
     "qbittorrent",
     "prowlarr",
-    "sonarr",
-    "radarr",
+    "sonarr-app",
+    "radarr-app",
     "seerr",
 )
 API_KEY_PATTERN = re.compile(r"^[0-9a-fA-F]{32}$")
-QBIT_TEMP_PASSWORD_PATTERN = re.compile(
-    r"temporary password is provided for this session:\s*(\S+)", re.IGNORECASE
+BCRYPT_HASH_PATTERN = r"\$2[aby]\$\d\d\$[./A-Za-z0-9]{53}"
+NETWORK_NAME = "media-stack"
+NETWORK_SUBNET = "172.31.250.0/24"
+SEERR_PORT = 5055
+SIGN_IN_PORT = 9091
+ACCESS_MODE_OPTIONS = (
+    ("1", "tailscale", "Tailscale HTTPS certificate"),
+    ("2", "domain", "Own domain with a Let's Encrypt certificate"),
+    ("3", "local", "Local network name without encryption"),
 )
 VPN_SERVICES = ("qbittorrent", "prowlarr")
 GLUETUN_ONLY_SERVICES = ("vpn-country",)
@@ -49,12 +58,9 @@ RENAMED_ENV_KEYS = {
     "JELLYFIN_PASS": "JELLYFIN_ADMIN_PASS",
 }
 CREDENTIAL_GROUPS = {
-    "qbittorrent": (("Username", "QBIT_USER", "text"), ("Password", "QBIT_PASS", "password")),
-    "sonarr": (("Username", "SONARR_USER", "text"), ("Password", "SONARR_PASS", "password"),
-               ("API key", "SONARR_API_KEY", "api_key")),
-    "radarr": (("Username", "RADARR_USER", "text"), ("Password", "RADARR_PASS", "password"),
-               ("API key", "RADARR_API_KEY", "api_key")),
-    "prowlarr": (("Username", "PROWLARR_USER", "text"), ("Password", "PROWLARR_PASS", "password")),
+    "admin": (("Username", "ADMIN_USER", "text"), ("Password", "ADMIN_PASS", "password")),
+    "sonarr": (("API key", "SONARR_API_KEY", "api_key"),),
+    "radarr": (("API key", "RADARR_API_KEY", "api_key"),),
     "jellyfin": (("Administrator username", "JELLYFIN_ADMIN_USER", "text"),
                  ("Administrator password", "JELLYFIN_ADMIN_PASS", "password"),
                  ("API key", "JELLYFIN_API_KEY", "api_key")),
@@ -63,10 +69,13 @@ CREDENTIAL_GROUPS = {
             ("Service username", "VPN_OPENVPN_USER", "text"),
             ("Service password", "VPN_OPENVPN_PASSWORD", "password"),
             ("Exit node", "TAILSCALE_EXIT_NODE", "text"), ("Auth key", "TAILSCALE_AUTH_KEY", "password")),
-    "access": (("Host", "ADMIN_ACCESS_HOST", None), ("Media directory", "MEDIA_DIR", None),
+    "access": (("Mode", "ACCESS_MODE", None), ("Address", "ACCESS_URL", None),
+               ("Media directory", "MEDIA_DIR", None),
                ("Configuration directory", "CONFIG_DIR", None)),
 }
 STACK_USED_KEYS = {
+    "ADMIN_USER",
+    "ADMIN_PASS",
     "SONARR_API_KEY",
     "RADARR_API_KEY",
     "VPN_OPENVPN_USER",
@@ -213,27 +222,27 @@ def read_env(path: Path = ENV_FILE) -> dict[str, str]:
         "PGID",
         "TZ",
         "QBT_LEGAL_NOTICE",
-        "QBIT_USER",
-        "QBIT_PASS",
-        "SONARR_USER",
-        "SONARR_PASS",
+        "ADMIN_USER",
+        "ADMIN_PASS",
+        "ACCESS_MODE",
+        "ADMIN_ACCESS_HOST",
         "SONARR_API_KEY",
-        "RADARR_USER",
-        "RADARR_PASS",
         "RADARR_API_KEY",
-        "PROWLARR_USER",
-        "PROWLARR_PASS",
         "VPN_GATEWAY_SERVICE",
     }
     missing = sorted(key for key in required if not values.get(key))
     if missing:
-        raise StackError(f"Missing required .env values: {', '.join(missing)}")
+        raise StackError(
+            f"Missing required .env values: {', '.join(missing)}. "
+            "Run 'python media_stack.py setup' to add them."
+        )
     for key in ("MEDIA_DIR", "CONFIG_DIR"):
         if not Path(values[key]).is_absolute():
             raise StackError(f"{key} must be an absolute path.")
     validate_api_key(values["SONARR_API_KEY"])
     validate_api_key(values["RADARR_API_KEY"])
     validate_vpn_config(values)
+    validate_access_config(values)
     if values["QBT_LEGAL_NOTICE"] != "confirm":
         raise StackError("qBittorrent's legal notice is not confirmed in .env.")
     return values
@@ -254,27 +263,158 @@ def compose_path(path: Path) -> str:
     return path.as_posix()
 
 
-def discover_access_host() -> str:
+def tailscale_dns_name() -> str:
     tailscale = shutil.which("tailscale")
-    if tailscale:
-        result = run(
-            (tailscale, "status", "--self", "--json"),
-            check=False,
-            capture_output=True,
-        )
-        if result.returncode == 0:
-            try:
-                dns_name = json.loads(result.stdout)["Self"]["DNSName"].rstrip(".")
-            except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
-                dns_name = ""
-            if dns_name:
-                return dns_name
-    return socket.getfqdn() or socket.gethostname()
+    if not tailscale:
+        return ""
+    result = run(
+        (tailscale, "status", "--self", "--json"),
+        check=False,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return ""
+    try:
+        return json.loads(result.stdout)["Self"]["DNSName"].rstrip(".")
+    except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
+        return ""
 
 
-def service_url(host: str, port: int) -> str:
-    formatted_host = f"[{host}]" if ":" in host else host
-    return f"http://{formatted_host}:{port}"
+TAILSCALE_SERVE_CONFLICT = (
+    "Tailscale Serve already uses HTTPS port 443 on this computer, so the stack cannot use it. "
+    "Remove the existing Tailscale Serve configuration with this command:\n"
+    "tailscale serve reset"
+)
+
+
+def tailscale_serve_uses_https_port() -> bool:
+    tailscale = shutil.which("tailscale")
+    if not tailscale:
+        return False
+    result = run((tailscale, "serve", "status", "--json"), check=False, capture_output=True)
+    try:
+        status = json.loads(result.stdout) if result.returncode == 0 and result.stdout.strip() else {}
+        return "443" in (status.get("TCP") or {})
+    except (ValueError, AttributeError):
+        return False
+
+
+def local_network_name() -> str:
+    return f"{socket.gethostname().split('.')[0]}.local"
+
+
+def validate_access_host(host: str) -> str:
+    host = host.strip().rstrip(".").lower()
+    if not re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)+", host) or re.fullmatch(r"[0-9.]+", host):
+        raise StackError("The address must be a name containing a dot, such as media.example.com.")
+    return host
+
+
+def validate_access_config(values: Mapping[str, str]) -> None:
+    if values.get("ACCESS_MODE") not in {mode for _number, mode, _label in ACCESS_MODE_OPTIONS}:
+        raise StackError("ACCESS_MODE must be tailscale, domain, or local.")
+    validate_access_host(values.get("ADMIN_ACCESS_HOST", ""))
+
+
+def apply_access_values(values: dict[str, str]) -> None:
+    scheme = "http" if values["ACCESS_MODE"] == "local" else "https"
+    values["ACCESS_URL"] = f"{scheme}://{values['ADMIN_ACCESS_HOST']}"
+    values["TINYAUTH_SECURE_COOKIE"] = "true" if scheme == "https" else "false"
+
+
+def print_access_mode_guide() -> None:
+    print(
+        """
+Secure access
+
+Every web page is reached through one address. Choose how that address is encrypted:
+
+1. Tailscale HTTPS certificate
+Pros: every device trusts the certificate, nothing to buy, works on Windows and Linux.
+Cons: the pages are reachable only from devices signed in to your Tailscale network. Tailscale must be installed on this computer.
+
+2. Own domain with a Let's Encrypt certificate
+Pros: every device trusts the certificate, and the pages are reachable from anywhere.
+Cons: you need a domain name and a router that forwards ports to this computer. The pages are reachable from the whole internet, protected by the admin sign-in.
+
+3. Local network name without encryption
+Pros: nothing to buy or configure outside this computer.
+Cons: passwords and pages cross your network unencrypted. Devices that cannot resolve .local names, including some Android phones, cannot open the pages.
+""".strip()
+    )
+
+
+def prompt_access_mode() -> str:
+    while True:
+        choice = input("Select an access mode [1]: ").strip() or "1"
+        for number, mode, _label in ACCESS_MODE_OPTIONS:
+            if choice == number:
+                return mode
+        print("Select a number from 1 to 3.")
+
+
+def print_tailscale_https_guide() -> None:
+    print(
+        """
+Tailscale HTTPS certificate
+
+1. Open the Tailscale admin console DNS page.
+https://login.tailscale.com/admin/dns
+2. Under HTTPS Certificates, click Enable HTTPS if it is not already enabled.
+""".strip()
+    )
+
+
+def print_domain_guide() -> None:
+    print(
+        f"""
+Own domain
+
+1. At your domain provider, create an A record that points your chosen name to this network's public IP address.
+2. On your router, forward TCP ports 80, 443, {SEERR_PORT}, and {SIGN_IN_PORT} to this computer.
+3. The following prompt requests the name, for example media.example.com.
+
+Let's Encrypt connects to this computer through those ports to issue the certificate. Until both steps are done, the pages do not open.
+""".strip()
+    )
+
+
+def prompt_access_host(prompt: str, default: str | None = None) -> str:
+    while True:
+        value = input(f"{prompt} [{default}]: " if default else f"{prompt}: ").strip()
+        try:
+            return validate_access_host(value or default or "")
+        except StackError as error:
+            print(f"Error: {error}")
+
+
+def ensure_access_config(values: dict[str, str]) -> None:
+    if values.get("ACCESS_MODE"):
+        validate_access_config(values)
+        apply_access_values(values)
+        return
+    print_access_mode_guide()
+    while True:
+        mode = prompt_access_mode()
+        if mode != "tailscale":
+            break
+        host = tailscale_dns_name()
+        if not host:
+            print("Tailscale is not installed or not signed in on this computer. Choose another mode.")
+        elif tailscale_serve_uses_https_port():
+            print(TAILSCALE_SERVE_CONFLICT)
+        else:
+            print_tailscale_https_guide()
+            wait_for_step("Tailscale HTTPS")
+            break
+    if mode == "domain":
+        print_domain_guide()
+        host = prompt_access_host("Domain name")
+    elif mode == "local":
+        host = prompt_access_host("Local network name", local_network_name())
+    values["ACCESS_MODE"] = mode
+    values["ADMIN_ACCESS_HOST"] = host
+    apply_access_values(values)
 
 
 def user_ids() -> tuple[str, str]:
@@ -407,17 +547,16 @@ def prompt_password(service: str) -> str:
         print("Passwords do not match.")
 
 
-def prompt_credentials() -> dict[str, str]:
-    credentials: dict[str, str] = {}
-    for key, service in (
-        ("QBIT", "qBittorrent"),
-        ("SONARR", "Sonarr"),
-        ("RADARR", "Radarr"),
-        ("PROWLARR", "Prowlarr"),
-    ):
-        credentials[f"{key}_USER"] = prompt_username(service)
-        credentials[f"{key}_PASS"] = prompt_password(service)
-    return credentials
+def print_admin_sign_in_guide() -> None:
+    print(
+        """
+Admin sign-in
+
+Create one username and password. They protect Homepage, qBittorrent, Sonarr, Radarr, Prowlarr, and the VPN country page, which no longer ask for their own logins. Jellyfin and Seerr keep their own logins.
+
+The following prompts request the username and password.
+""".strip()
+    )
 
 
 def ensure_credentials(
@@ -426,20 +565,45 @@ def ensure_credentials(
 ) -> None:
     selected_keys = set(service_keys) if service_keys is not None else None
     for key, service in (
-        ("QBIT", "qBittorrent"),
-        ("SONARR", "Sonarr"),
-        ("RADARR", "Radarr"),
-        ("PROWLARR", "Prowlarr"),
+        ("ADMIN", "Admin"),
         ("JELLYFIN_ADMIN", "Jellyfin administrator"),
     ):
         if selected_keys is not None and key not in selected_keys:
             continue
         user_key = f"{key}_USER"
         password_key = f"{key}_PASS"
-        if not values.get(user_key):
-            values[user_key] = prompt_username(service)
+        while not values.get(user_key):
+            username = prompt_username(service)
+            if ":" in username:
+                print("Username cannot contain ':'.")
+                continue
+            values[user_key] = username
         if not values.get(password_key):
             values[password_key] = prompt_password(service)
+
+
+def admin_login_fingerprint(values: Mapping[str, str]) -> str:
+    login = f"{values['ADMIN_USER']}\0{values['ADMIN_PASS']}".encode()
+    return hashlib.sha256(login).hexdigest()
+
+
+def ensure_tinyauth_users(values: dict[str, str]) -> bool:
+    fingerprint = admin_login_fingerprint(values)
+    if values.get("TINYAUTH_USERS") and values.get("ADMIN_LOGIN_FINGERPRINT") == fingerprint:
+        return False
+    result = compose(
+        "run", "--rm", "--no-deps", "-T", "tinyauth", "user", "create",
+        "--username", values["ADMIN_USER"], "--password", values["ADMIN_PASS"],
+        check=False,
+        capture_output=True,
+    )
+    output = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout + result.stderr)
+    match = re.search(re.escape(values["ADMIN_USER"]) + f":({BCRYPT_HASH_PATTERN})", output)
+    if result.returncode != 0 or not match:
+        raise StackError("Could not create the admin sign-in. Check that Docker can run the tinyauth image.")
+    values["TINYAUTH_USERS"] = f"{values['ADMIN_USER']}:{match.group(1)}"
+    values["ADMIN_LOGIN_FINGERPRINT"] = fingerprint
+    return True
 
 
 def create_directories(media_dir: Path, config_dir: Path) -> None:
@@ -459,6 +623,10 @@ def create_directories(media_dir: Path, config_dir: Path) -> None:
         "tailscale",
         "seerr",
         "vpn-country",
+        "caddy/certs",
+        "caddy/data",
+        "caddy/config",
+        "tinyauth",
     ):
         (config_dir / directory).mkdir(parents=True, exist_ok=True)
 
@@ -563,6 +731,223 @@ def copy_homepage_config(config_dir: Path, values: Mapping[str, str]) -> bool:
         encoding="utf-8",
     )
     return gateway == "gluetun" and write_gluetun_auth(config_dir, values)
+
+
+def write_text_if_changed(path: Path, content: str) -> bool:
+    if path.exists() and path.read_text(encoding="utf-8") == content:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return True
+
+
+def caddyfile(values: Mapping[str, str]) -> str:
+    mode = values["ACCESS_MODE"]
+    host = values["ADMIN_ACCESS_HOST"]
+    url = values["ACCESS_URL"]
+    gateway = values["VPN_GATEWAY_SERVICE"]
+    tls = "\ttls /certs/cert.pem /certs/key.pem\n" if mode == "tailscale" else ""
+    scheme = "http://" if mode == "local" else ""
+    vpn_country = (
+        "\t\tredir /vpn-country /vpn-country/\n"
+        "\t\thandle_path /vpn-country/* {\n"
+        "\t\t\treverse_proxy vpn-country:8090\n"
+        "\t\t}\n"
+        if gateway == "gluetun"
+        else ""
+    )
+    internal = "".join(
+        f"""
+# Internal address {name}:{port} adds the {path} path only when it is missing.
+http://:{port} {{
+\t@missing not path {path} {path}/*
+\trewrite @missing {path}{{uri}}
+\treverse_proxy {upstream}:{port}
+}}
+"""
+        for name, port, path, upstream in (
+            ("sonarr", 8989, "/sonarr", "sonarr-app"),
+            ("radarr", 7878, "/radarr", "radarr-app"),
+            ("prowlarr", 9696, "/prowlarr", gateway),
+            ("jellyfin", 8096, "/jellyfin", "jellyfin-app"),
+        )
+    )
+    return f"""# Generated by media_stack.py from .env. Changes here are overwritten.
+
+{scheme}{host} {{
+{tls}\t@jellyfin path /jellyfin /jellyfin/*
+\thandle @jellyfin {{
+\t\treverse_proxy jellyfin-app:8096
+\t}}
+
+\t@seerr path /seerr /seerr/*
+\tredir @seerr {url}:{SEERR_PORT}/
+
+\thandle {{
+\t\tforward_auth tinyauth:3000 {{
+\t\t\turi /api/auth/caddy
+\t\t}}
+
+\t\t@sonarr path /sonarr /sonarr/*
+\t\thandle @sonarr {{
+\t\t\treverse_proxy sonarr-app:8989
+\t\t}}
+
+\t\t@radarr path /radarr /radarr/*
+\t\thandle @radarr {{
+\t\t\treverse_proxy radarr-app:7878
+\t\t}}
+
+\t\t@prowlarr path /prowlarr /prowlarr/*
+\t\thandle @prowlarr {{
+\t\t\treverse_proxy {gateway}:9696
+\t\t}}
+
+\t\tredir /qbittorrent /qbittorrent/
+\t\thandle_path /qbittorrent/* {{
+\t\t\treverse_proxy {gateway}:8080
+\t\t}}
+
+{vpn_country}\t\thandle {{
+\t\t\treverse_proxy homepage:3000
+\t\t}}
+\t}}
+}}
+
+{scheme}{host}:{SEERR_PORT} {{
+{tls}\treverse_proxy seerr:5055
+}}
+
+{scheme}{host}:{SIGN_IN_PORT} {{
+{tls}\treverse_proxy tinyauth:3000
+}}
+{internal}"""
+
+
+def grant_tailscale_operator() -> None:
+    if not sys.platform.startswith("linux"):
+        return
+    user = os.environ.get("USER")
+    if not user:
+        raise StackError("Cannot determine the current Linux user.")
+    print("Tailscale needs permission for this user to fetch certificates. sudo asks for your password.")
+    run(("sudo", shutil.which("tailscale") or "tailscale", "set", f"--operator={user}"))
+
+
+def renew_tailscale_certificate(values: Mapping[str, str]) -> bool:
+    if values["ACCESS_MODE"] != "tailscale":
+        return False
+    tailscale = shutil.which("tailscale")
+    if not tailscale:
+        raise StackError("Tailscale is not installed, so the HTTPS certificate cannot be renewed.")
+    if tailscale_serve_uses_https_port():
+        raise StackError(TAILSCALE_SERVE_CONFLICT)
+    certs = Path(values["CONFIG_DIR"]) / "caddy" / "certs"
+    certs.mkdir(parents=True, exist_ok=True)
+    files = (certs / "cert.pem", certs / "key.pem")
+    before = [path.read_bytes() if path.exists() else None for path in files]
+    result = run(
+        (
+            tailscale, "cert",
+            "--cert-file", str(files[0]), "--key-file", str(files[1]),
+            values["ADMIN_ACCESS_HOST"],
+        ),
+        check=False,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise StackError(
+            "Tailscale did not issue the HTTPS certificate: "
+            + (result.stderr or result.stdout).strip()
+        )
+    return [path.read_bytes() for path in files] != before
+
+
+def write_caddy_config(values: Mapping[str, str]) -> bool:
+    path = Path(values["CONFIG_DIR"]) / "caddy" / "Caddyfile"
+    return write_text_if_changed(path, caddyfile(values))
+
+
+def jellyfin_network_file(config_dir: Path) -> Path:
+    return config_dir / "jellyfin" / "config" / "network.xml"
+
+
+def jellyfin_base_url_is_set(config_dir: Path) -> bool:
+    path = jellyfin_network_file(config_dir)
+    if not path.exists():
+        return False
+    try:
+        element = ElementTree.parse(path).getroot().find("BaseUrl")
+    except ElementTree.ParseError:
+        return False
+    return element is not None and element.text == "/jellyfin"
+
+
+def write_jellyfin_base_url(config_dir: Path) -> None:
+    path = jellyfin_network_file(config_dir)
+    ElementTree.register_namespace("xsi", "http://www.w3.org/2001/XMLSchema-instance")
+    ElementTree.register_namespace("xsd", "http://www.w3.org/2001/XMLSchema")
+    if path.exists():
+        tree = ElementTree.parse(path)
+    else:
+        tree = ElementTree.ElementTree(ElementTree.Element("NetworkConfiguration"))
+    root = tree.getroot()
+    element = root.find("BaseUrl")
+    if element is None:
+        element = ElementTree.SubElement(root, "BaseUrl")
+    element.text = "/jellyfin"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tree.write(path, encoding="utf-8", xml_declaration=True)
+
+
+def qbittorrent_config_file(config_dir: Path) -> Path:
+    return config_dir / "qbittorrent" / "qBittorrent" / "config" / "qBittorrent.conf"
+
+
+def write_qbittorrent_login_bypass(config_dir: Path) -> bool:
+    path = qbittorrent_config_file(config_dir)
+    settings = {
+        "WebUI\\AuthSubnetWhitelistEnabled": "true",
+        "WebUI\\AuthSubnetWhitelist": NETWORK_SUBNET,
+    }
+    original = path.read_text(encoding="utf-8") if path.exists() else ""
+    lines = original.splitlines()
+    try:
+        section_start = lines.index("[Preferences]") + 1
+    except ValueError:
+        lines += ["[Preferences]"]
+        section_start = len(lines)
+    section_end = next(
+        (index for index in range(section_start, len(lines)) if lines[index].startswith("[")),
+        len(lines),
+    )
+    section = [
+        line for line in lines[section_start:section_end]
+        if line.split("=", 1)[0] not in settings
+    ]
+    section += [f"{key}={value}" for key, value in settings.items()]
+    content = "\n".join(lines[:section_start] + section + lines[section_end:]) + "\n"
+    if content == original:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return True
+
+
+def recreate_network_if_needed() -> None:
+    subnet = stack_network_subnet()
+    if subnet is not None and subnet != NETWORK_SUBNET:
+        compose("down", "--remove-orphans")
+
+
+def stack_network_subnet() -> str | None:
+    result = run(
+        ("docker", "network", "inspect", NETWORK_NAME, "--format",
+         "{{range .IPAM.Config}}{{.Subnet}} {{end}}"),
+        check=False,
+        capture_output=True,
+    )
+    return result.stdout.strip() if result.returncode == 0 else None
 
 
 def prompt_vpn_provider() -> str:
@@ -756,8 +1141,13 @@ def wait_for_vpn_gateway(values: Mapping[str, str]) -> None:
         time.sleep(2)
 
 
-def start_core_services(values: Mapping[str, str], restart_gateway: bool = False) -> None:
+def start_core_services(
+    values: Mapping[str, str],
+    restart_gateway: bool = False,
+    restart_proxy: bool = False,
+) -> None:
     gateway = values["VPN_GATEWAY_SERVICE"]
+    config_dir = Path(values["CONFIG_DIR"])
     inactive_gateway = "tailscale-vpn" if gateway == "gluetun" else "gluetun"
     if gateway == "gluetun":
         gateway_services, inactive_services = GLUETUN_ONLY_SERVICES, (inactive_gateway,)
@@ -765,9 +1155,15 @@ def start_core_services(values: Mapping[str, str], restart_gateway: bool = False
         gateway_services, inactive_services = (), (inactive_gateway, *GLUETUN_ONLY_SERVICES)
     other_services = [service for service in CORE_SERVICES if service not in VPN_SERVICES]
     compose("stop", *VPN_SERVICES, *inactive_services)
-    compose("up", "-d", "--no-deps", gateway, *other_services, *gateway_services)
+    write_qbittorrent_login_bypass(config_dir)
+    if not jellyfin_base_url_is_set(config_dir):
+        compose("stop", "jellyfin-app")
+        write_jellyfin_base_url(config_dir)
+    compose("up", "-d", "--no-deps", "--remove-orphans", gateway, *other_services, *gateway_services)
     if restart_gateway:
         compose("restart", gateway)
+    if restart_proxy:
+        compose("restart", "caddy")
     if gateway == "gluetun":
         save_vpn_country_list(values)
     wait_for_vpn_gateway(values)
@@ -806,120 +1202,71 @@ def complete_setup_step(path: Path, completed_steps: set[str], step: str) -> Non
     write_setup_state(path, completed_steps)
 
 
-def temporary_qbittorrent_password(logs: str) -> str:
-    match = QBIT_TEMP_PASSWORD_PATTERN.search(logs)
-    if not match:
-        raise StackError("qBittorrent did not publish a temporary Web UI password.")
-    return match.group(1)
-
-
-def wait_for_qbittorrent_password(timeout: int = 60) -> str:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        result = compose("logs", "--no-color", "qbittorrent", capture_output=True)
-        try:
-            return temporary_qbittorrent_password(result.stdout + result.stderr)
-        except StackError:
-            time.sleep(2)
-    raise StackError(
-        "qBittorrent did not publish a temporary Web UI password within one minute."
-    )
-
-
-def print_qbittorrent_guide(
-    temporary_password: str | None, access_host: str = "localhost"
-) -> None:
-    login = (
-        "Temporary username: admin\n"
-        f"Temporary password: {temporary_password}"
-        if temporary_password
-        else "Use the existing qBittorrent login stored in .env."
-    )
-    sign_in = (
-        "Sign in to the Web UI with the temporary login shown above."
-        if temporary_password
-        else "Sign in to the Web UI with the existing login."
-    )
+def print_qbittorrent_guide(access_url: str, admin_user: str, admin_password: str) -> None:
     print(
         f"""
 qBittorrent setup
 
 Open this link:
-{service_url(access_host, 8080)}
+{access_url}/qbittorrent/
 
-{login}
-
-1. {sign_in}
-2. Open Tools > Options > Web UI.
-3. Under Authentication, replace the temporary login with the username and password requested after these steps.
-4. Open the Downloads section.
-5. Set Saving Management > Default Save Path to /media/Downloads.
+1. If the Media Stack sign-in page appears, sign in with the admin login.
+2. Username: {admin_user}
+3. Password: {admin_password}
+4. In qBittorrent, open Tools > Options > Downloads.
+5. Set Saving Management > Default Save Path to /media/Downloads
 6. Set Keep incomplete torrents in to /media/Downloads/incomplete
 7. Click Save.
 """.strip()
     )
 
 
-def print_sonarr_guide(
-    access_host: str = "localhost",
-    qbit_username: str = "<qBittorrent username>",
-    qbit_password: str = "<qBittorrent password>",
-) -> None:
+def print_sonarr_guide(access_url: str) -> None:
     print(
         f"""
 Sonarr setup
 
 Open this link:
-{service_url(access_host, 8989)}
+{access_url}/sonarr
 
-1. Complete first-run authentication with the username and password requested after these steps.
-2. Open Settings > Media Management.
-3. Under Root Folders, click Add Root Folder.
-4. Select /media/Series and save it.
-5. Open Settings > Download Clients.
-6. Click Add, then select qBittorrent.
-7. Set Host to qbittorrent and Port to 8080.
-8. Username: {qbit_username}
-9. Password: {qbit_password}
-10. Set Category to sonarr.
-11. Click Test, then Save.
-12. Open Settings > General > Security.
-13. Copy the API Key that Sonarr generated automatically. The next terminal prompt will ask for it.
+1. Open Settings > Media Management.
+2. Under Root Folders, click Add Root Folder.
+3. Select /media/Series and save it.
+4. Open Settings > Download Clients.
+5. Click Add, then select qBittorrent.
+6. Set Host to qbittorrent and Port to 8080. Leave Username and Password empty.
+7. Set Category to sonarr.
+8. Click Test, then Save.
+9. Open Settings > General > Security.
+10. Copy the API Key that Sonarr generated automatically. The next terminal prompt will ask for it.
 """.strip()
     )
 
 
-def print_radarr_guide(
-    access_host: str = "localhost",
-    qbit_username: str = "<qBittorrent username>",
-    qbit_password: str = "<qBittorrent password>",
-) -> None:
+def print_radarr_guide(access_url: str) -> None:
     print(
         f"""
 Radarr setup
 
 Open this link:
-{service_url(access_host, 7878)}
+{access_url}/radarr
 
-1. Complete first-run authentication with the username and password requested after these steps.
-2. Open Settings > Media Management.
-3. Under Root Folders, click Add Root Folder.
-4. Select /media/Movies and save it.
-5. Open Settings > Download Clients.
-6. Click Add, then select qBittorrent.
-7. Set Host to qbittorrent and Port to 8080.
-8. Username: {qbit_username}
-9. Password: {qbit_password}
-10. Set Category to radarr.
-11. Click Test, then Save.
-12. Open Settings > General > Security.
-13. Copy the API Key that Radarr generated automatically. The next terminal prompt will ask for it.
+1. Open Settings > Media Management.
+2. Under Root Folders, click Add Root Folder.
+3. Select /media/Movies and save it.
+4. Open Settings > Download Clients.
+5. Click Add, then select qBittorrent.
+6. Set Host to qbittorrent and Port to 8080. Leave Username and Password empty.
+7. Set Category to radarr.
+8. Click Test, then Save.
+9. Open Settings > General > Security.
+10. Copy the API Key that Radarr generated automatically. The next terminal prompt will ask for it.
 """.strip()
     )
 
 
 def print_prowlarr_guide(
-    access_host: str = "localhost",
+    access_url: str,
     sonarr_api_key: str = "<Sonarr API key>",
     radarr_api_key: str = "<Radarr API key>",
 ) -> None:
@@ -928,37 +1275,36 @@ def print_prowlarr_guide(
 Prowlarr setup
 
 Open this link:
-{service_url(access_host, 9696)}
+{access_url}/prowlarr
 
-1. Complete first-run authentication with the username and password requested after these steps.
-2. Open Settings > Apps.
-3. Click Add, then select Sonarr.
-4. Set Sync Level to Full Sync.
-5. Prowlarr Server: http://prowlarr:9696
-6. Sonarr Server: http://sonarr:8989
-7. API Key: {sonarr_api_key}
-8. Click Test, then Save.
-9. Click Add, then select Radarr.
-10. Set Sync Level to Full Sync.
-11. Prowlarr Server: http://prowlarr:9696
-12. Radarr Server: http://radarr:7878
-13. API Key: {radarr_api_key}
-14. Click Test, then Save.
-15. Open Indexers, add your indexers, then test each one.
+1. Open Settings > Apps.
+2. Click Add, then select Sonarr.
+3. Set Sync Level to Full Sync.
+4. Prowlarr Server: http://prowlarr:9696
+5. Sonarr Server: http://sonarr:8989
+6. API Key: {sonarr_api_key}
+7. Click Test, then Save.
+8. Click Add, then select Radarr.
+9. Set Sync Level to Full Sync.
+10. Prowlarr Server: http://prowlarr:9696
+11. Radarr Server: http://radarr:7878
+12. API Key: {radarr_api_key}
+13. Click Test, then Save.
+14. Open Indexers, add your indexers, then test each one.
 """.strip()
     )
 
 
-def print_jellyfin_guide(access_host: str = "localhost") -> None:
+def print_jellyfin_guide(access_url: str) -> None:
     print(
         f"""
 Jellyfin setup
 
 Open this link:
-{service_url(access_host, 8096)}
+{access_url}/jellyfin
 
 1. Select the display language.
-2. Create the Jellyfin administrator account with the username and password requested after these steps. Choose a different password from the other applications.
+2. Create the Jellyfin administrator account with the username and password requested after these steps.
 3. Add a Movies library using /media/Movies.
 4. Add a Shows library using /media/Series.
 5. Complete the remaining setup wizard pages.
@@ -970,16 +1316,16 @@ Open this link:
     )
 
 
-def print_jellyfin_notifications_guide(access_host: str, api_key: str) -> None:
+def print_jellyfin_notifications_guide(access_url: str, api_key: str) -> None:
     print(
         f"""
 Jellyfin notifications
 
 Radarr link:
-{service_url(access_host, 7878)}
+{access_url}/radarr
 
 Sonarr link:
-{service_url(access_host, 8989)}
+{access_url}/sonarr
 
 1. In Radarr, open Settings > Connect, click +, then select Emby / Jellyfin.
 2. Name: Jellyfin
@@ -999,13 +1345,13 @@ Sonarr link:
     )
 
 
-def print_seerr_guide(access_host: str, values: Mapping[str, str]) -> None:
+def print_seerr_guide(access_url: str, values: Mapping[str, str]) -> None:
     print(
         f"""
 Seerr setup
 
 Open this link:
-{service_url(access_host, 5055)}
+{access_url}:{SEERR_PORT}
 
 1. Choose Jellyfin as the server type.
 2. Jellyfin URL: jellyfin
@@ -1066,29 +1412,32 @@ def rollback_setup(previous_env: bytes | None, stop_stack: bool) -> None:
         restore_file(ENV_FILE, previous_env)
 
 
-def wait_for_api(name: str, url: str, api_key: str, timeout: int = 180) -> None:
+def wait_for_api(service: str, name: str, url: str, api_key: str, timeout: int = 180) -> None:
     deadline = time.monotonic() + timeout
-    request = urllib.request.Request(url, headers={"X-Api-Key": api_key})
     while time.monotonic() < deadline:
-        try:
-            with urllib.request.urlopen(request, timeout=5) as response:
-                if 200 <= response.status < 300:
-                    return
-        except (urllib.error.URLError, TimeoutError):
-            pass
+        result = compose(
+            "exec", "-T", service, "curl", "-fsS", "-o", "/dev/null",
+            "-H", f"X-Api-Key: {api_key}", url,
+            check=False,
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            return
         time.sleep(2)
     raise StackError(f"{name} did not become ready within three minutes.")
 
 
 def wait_for_apps(values: Mapping[str, str]) -> None:
     wait_for_api(
+        "sonarr-app",
         "Sonarr",
-        "http://127.0.0.1:8989/api/v3/system/status",
+        "http://localhost:8989/sonarr/api/v3/system/status",
         values["SONARR_API_KEY"],
     )
     wait_for_api(
+        "radarr-app",
         "Radarr",
-        "http://127.0.0.1:7878/api/v3/system/status",
+        "http://localhost:7878/radarr/api/v3/system/status",
         values["RADARR_API_KEY"],
     )
 
@@ -1202,6 +1551,12 @@ def install_autostart() -> None:
         raise StackError("Automatic start is supported only on Windows and Linux.")
 
 
+def prepare_proxy(values: Mapping[str, str]) -> bool:
+    certificate_changed = renew_tailscale_certificate(values)
+    config_changed = write_caddy_config(values)
+    return certificate_changed or config_changed
+
+
 def setup() -> None:
     restore_windows_console_input()
     wait_for_docker()
@@ -1221,7 +1576,6 @@ def setup() -> None:
 
     config_dir = (ROOT / "config").resolve()
     puid, pgid = user_ids()
-    access_host = existing_values.get("ADMIN_ACCESS_HOST") or discover_access_host()
     values = dict(existing_values)
     values.update({
         "MEDIA_DIR": compose_path(media_dir),
@@ -1229,58 +1583,48 @@ def setup() -> None:
         "PUID": puid,
         "PGID": pgid,
         "TZ": existing_values.get("TZ", "Europe/Paris"),
-        "ADMIN_ACCESS_HOST": access_host,
         "QBT_LEGAL_NOTICE": "confirm",
         "SONARR_API_KEY": existing_values.get("SONARR_API_KEY", ""),
         "RADARR_API_KEY": existing_values.get("RADARR_API_KEY", ""),
         "VPN_SERVER_COUNTRIES": existing_values.get("VPN_SERVER_COUNTRIES", ""),
     })
     ensure_vpn_config(values)
+    ensure_access_config(values)
+    if not values.get("ADMIN_USER") or not values.get("ADMIN_PASS"):
+        print_admin_sign_in_guide()
+        ensure_credentials(values, ("ADMIN",))
     ensure_gluetun_api_keys(values)
     apply_saved_vpn_country(values)
     create_directories(media_dir, config_dir)
     gateway_access_changed = copy_homepage_config(config_dir, values)
-    qbittorrent_was_configured = any(
-        (config_dir / "qbittorrent").rglob("qBittorrent.conf")
-    )
     state_path = config_dir / "setup-state.json"
     completed_steps = read_setup_state(state_path)
     write_env(ENV_FILE, values)
 
     compose("config", "--quiet")
-    start_core_services(values, gateway_access_changed)
-
-    if "qbittorrent" not in completed_steps:
-        if qbittorrent_was_configured:
-            try:
-                temporary_password = wait_for_qbittorrent_password()
-            except StackError:
-                temporary_password = None
-        else:
-            temporary_password = wait_for_qbittorrent_password()
-        print_qbittorrent_guide(temporary_password, access_host)
-        ensure_credentials(values, ("QBIT",))
+    recreate_network_if_needed()
+    if ensure_tinyauth_users(values):
         write_env(ENV_FILE, values)
+    if values["ACCESS_MODE"] == "tailscale" and "tailscale-operator" not in completed_steps:
+        grant_tailscale_operator()
+        complete_setup_step(state_path, completed_steps, "tailscale-operator")
+    start_core_services(values, gateway_access_changed, prepare_proxy(values))
+
+    access_url = values["ACCESS_URL"]
+    if "qbittorrent" not in completed_steps:
+        print_qbittorrent_guide(access_url, values["ADMIN_USER"], values["ADMIN_PASS"])
         wait_for_step("qBittorrent")
         complete_setup_step(state_path, completed_steps, "qbittorrent")
 
     if "sonarr" not in completed_steps or not values["SONARR_API_KEY"]:
-        print_sonarr_guide(
-            access_host, values["QBIT_USER"], values["QBIT_PASS"]
-        )
-        ensure_credentials(values, ("SONARR",))
-        write_env(ENV_FILE, values)
+        print_sonarr_guide(access_url)
         wait_for_step("Sonarr")
         values["SONARR_API_KEY"] = prompt_api_key("Sonarr")
         write_env(ENV_FILE, values)
         complete_setup_step(state_path, completed_steps, "sonarr")
 
     if "radarr" not in completed_steps or not values["RADARR_API_KEY"]:
-        print_radarr_guide(
-            access_host, values["QBIT_USER"], values["QBIT_PASS"]
-        )
-        ensure_credentials(values, ("RADARR",))
-        write_env(ENV_FILE, values)
+        print_radarr_guide(access_url)
         wait_for_step("Radarr")
         values["RADARR_API_KEY"] = prompt_api_key("Radarr")
         write_env(ENV_FILE, values)
@@ -1288,15 +1632,13 @@ def setup() -> None:
 
     if "prowlarr" not in completed_steps:
         print_prowlarr_guide(
-            access_host, values["SONARR_API_KEY"], values["RADARR_API_KEY"]
+            access_url, values["SONARR_API_KEY"], values["RADARR_API_KEY"]
         )
-        ensure_credentials(values, ("PROWLARR",))
-        write_env(ENV_FILE, values)
         wait_for_step("Prowlarr")
         complete_setup_step(state_path, completed_steps, "prowlarr")
 
     if "jellyfin" not in completed_steps:
-        print_jellyfin_guide(access_host)
+        print_jellyfin_guide(access_url)
         ensure_credentials(values, ("JELLYFIN_ADMIN",))
         write_env(ENV_FILE, values)
         wait_for_step("Jellyfin")
@@ -1314,31 +1656,36 @@ def setup() -> None:
         write_env(ENV_FILE, values)
 
     if "jellyfin-notifications" not in completed_steps:
-        print_jellyfin_notifications_guide(access_host, values["JELLYFIN_API_KEY"])
+        print_jellyfin_notifications_guide(access_url, values["JELLYFIN_API_KEY"])
         wait_for_step("Jellyfin notification")
         complete_setup_step(state_path, completed_steps, "jellyfin-notifications")
 
     sync_recyclarr(values)
 
     if "seerr" not in completed_steps:
-        print_seerr_guide(access_host, values)
+        print_seerr_guide(access_url, values)
         wait_for_step("Seerr")
         complete_setup_step(state_path, completed_steps, "seerr")
 
     install_autostart()
     print("\nSetup complete. Use 'python media_stack.py status' to inspect it.")
-    print(f"Open Homepage:\n{service_url(access_host, 3000)}")
+    print(f"Open Homepage:\n{access_url}")
 
 
 def start() -> None:
     values = read_env()
-    keys_added = ensure_gluetun_api_keys(values)
-    if apply_saved_vpn_country(values) or keys_added:
-        write_env(ENV_FILE, values)
+    apply_access_values(values)
+    ensure_gluetun_api_keys(values)
+    apply_saved_vpn_country(values)
+    write_env(ENV_FILE, values)
     wait_for_docker()
-    create_directories(Path(values["MEDIA_DIR"]), Path(values["CONFIG_DIR"]))
-    gateway_access_changed = copy_homepage_config(Path(values["CONFIG_DIR"]), values)
-    start_core_services(values, gateway_access_changed)
+    recreate_network_if_needed()
+    if ensure_tinyauth_users(values):
+        write_env(ENV_FILE, values)
+    config_dir = Path(values["CONFIG_DIR"])
+    create_directories(Path(values["MEDIA_DIR"]), config_dir)
+    gateway_access_changed = copy_homepage_config(config_dir, values)
+    start_core_services(values, gateway_access_changed, prepare_proxy(values))
     sync_recyclarr(values)
 
 
