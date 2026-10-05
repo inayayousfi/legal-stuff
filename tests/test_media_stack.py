@@ -1126,15 +1126,19 @@ class ProxyConfigTests(unittest.TestCase):
             self.assertEqual(root.tag, "NetworkConfiguration")
             self.assertEqual(root.findtext("BaseUrl"), "/jellyfin")
 
-    def test_jellyfin_stays_outside_the_sign_in_and_admin_pages_inside(self):
+    def test_jellyfin_and_homepage_stay_outside_the_sign_in_and_admin_pages_inside(self):
         text = media_stack.caddyfile(self.access_values("tailscale", "media.example.ts.net"))
         site = text.split("\nmedia.example.ts.net:5055 {", 1)[0]
-        public, protected = site.split("\thandle {\n\t\tforward_auth tinyauth:3000 {", 1)
-        self.assertIn("handle @jellyfin {\n\t\treverse_proxy jellyfin-app:8096", public)
-        self.assertIn("redir @seerr https://media.example.ts.net:5055/", public)
-        for upstream in ("sonarr-app:8989", "radarr-app:7878", "gluetun:9696", "gluetun:8080", "vpn-country:8090", "homepage:3000"):
-            self.assertNotIn(upstream, public)
-            self.assertIn(f"reverse_proxy {upstream}", protected)
+        self.assertIn("redir @seerr https://media.example.ts.net:5055/", site)
+
+        def guarded(upstream):
+            end = site.index(f"reverse_proxy {upstream}\n")
+            return "forward_auth tinyauth:3000" in site[site.rindex("handle", 0, end):end]
+
+        for upstream in ("jellyfin-app:8096", "homepage:3000"):
+            self.assertFalse(guarded(upstream), upstream)
+        for upstream in ("sonarr-app:8989", "radarr-app:7878", "gluetun:9696", "gluetun:8080", "vpn-country:8090"):
+            self.assertTrue(guarded(upstream), upstream)
 
     def test_internal_addresses_add_the_path_only_when_missing(self):
         text = media_stack.caddyfile(self.access_values("local", "media.local", "tailscale-vpn"))

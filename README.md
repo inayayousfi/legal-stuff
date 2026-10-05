@@ -36,7 +36,7 @@ Tailscale mode requires that Tailscale Serve does not already use HTTPS port `44
 
 Caddy publishes ports `80`, `443`, `5055` (Seerr), and `9091` (sign-in). The other web interfaces no longer publish their own ports. In own-domain mode, forward TCP ports `80`, `443`, `5055`, and `9091` from the router to this computer.
 
-One admin username and password protect Homepage, qBittorrent, Sonarr, Radarr, Prowlarr, and the VPN country page. Those applications no longer ask for their own logins: Sonarr, Radarr, and Prowlarr use their `External` authentication method, and qBittorrent skips its login for the stack's Docker network (`172.31.250.0/24`). Jellyfin and Seerr keep their own logins, because Jellyfin's phone and TV applications cannot pass the admin sign-in and Seerr is meant for the people who request media.
+One admin username and password protect qBittorrent, Sonarr, Radarr, Prowlarr, and the VPN country page. Those applications no longer ask for their own logins: Sonarr, Radarr, and Prowlarr use their `External` authentication method, and qBittorrent skips its login for the stack's Docker network (`172.31.250.0/24`). Jellyfin and Seerr keep their own logins, because Jellyfin's phone and TV applications cannot pass the admin sign-in and Seerr is meant for the people who request media.
 
 Containers keep reaching each other through `sonarr:8989`, `radarr:7878`, `prowlarr:9696`, and `jellyfin:8096`. Those names belong to Caddy, which adds each application's path only when the address lacks it. Saved addresses in Prowlarr, Seerr, Recyclarr, and the Jellyfin notifications therefore need no path.
 
@@ -470,7 +470,7 @@ An older `.env` also remains accessible in the public Git history. Credentials f
 
 qBittorrent is routed through the selected gateway. Gluetun requires `NET_ADMIN`; the Tailscale gateway requires `NET_ADMIN` and `NET_RAW`. Both require access to `/dev/net/tun`. No other application service shares that gateway network.
 
-Every web page goes through Caddy. The admin sign-in protects Homepage, qBittorrent, Sonarr, Radarr, Prowlarr, and the VPN country page, which do not ask for their own logins. Containers on the stack's Docker network reach those applications without signing in, so do not attach other containers to that network. Jellyfin and Seerr keep their own logins; protect the Jellyfin administrator account with a strong password.
+Every web page goes through Caddy. The admin sign-in protects qBittorrent, Sonarr, Radarr, Prowlarr, and the VPN country page, which do not ask for their own logins. Containers on the stack's Docker network reach those applications without signing in, so do not attach other containers to that network. Jellyfin and Seerr keep their own logins; protect the Jellyfin administrator account with a strong password.
 
 In own-domain mode, every page is reachable from the internet. In local mode, passwords and pages cross the local network unencrypted.
 

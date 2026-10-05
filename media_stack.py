@@ -335,7 +335,7 @@ Cons: the pages are reachable only from devices signed in to your Tailscale netw
 
 2. Own domain with a Let's Encrypt certificate
 Pros: every device trusts the certificate, and the pages are reachable from anywhere.
-Cons: you need a domain name and a router that forwards ports to this computer. The pages are reachable from the whole internet, protected by the admin sign-in.
+Cons: you need a domain name and a router that forwards ports to this computer. The pages are reachable from the whole internet; the administration pages are protected by the admin sign-in.
 
 3. Local network name without encryption
 Pros: nothing to buy or configure outside this computer.
@@ -552,7 +552,7 @@ def print_admin_sign_in_guide() -> None:
         """
 Admin sign-in
 
-Create one username and password. They protect Homepage, qBittorrent, Sonarr, Radarr, Prowlarr, and the VPN country page, which no longer ask for their own logins. Jellyfin and Seerr keep their own logins.
+Create one username and password. They protect qBittorrent, Sonarr, Radarr, Prowlarr, and the VPN country page, which no longer ask for their own logins. Jellyfin and Seerr keep their own logins.
 
 The following prompts request the username and password.
 """.strip()
@@ -748,11 +748,13 @@ def caddyfile(values: Mapping[str, str]) -> str:
     gateway = values["VPN_GATEWAY_SERVICE"]
     tls = "\ttls /certs/cert.pem /certs/key.pem\n" if mode == "tailscale" else ""
     scheme = "http://" if mode == "local" else ""
+    guard = "\t\tforward_auth tinyauth:3000 {\n\t\t\turi /api/auth/caddy\n\t\t}\n"
     vpn_country = (
-        "\t\tredir /vpn-country /vpn-country/\n"
-        "\t\thandle_path /vpn-country/* {\n"
-        "\t\t\treverse_proxy vpn-country:8090\n"
-        "\t\t}\n"
+        "\tredir /vpn-country /vpn-country/\n"
+        "\thandle_path /vpn-country/* {\n"
+        f"{guard}"
+        "\t\treverse_proxy vpn-country:8090\n"
+        "\t}\n\n"
         if gateway == "gluetun"
         else ""
     )
@@ -783,34 +785,28 @@ http://:{port} {{
 \t@seerr path /seerr /seerr/*
 \tredir @seerr {url}:{SEERR_PORT}/
 
-\thandle {{
-\t\tforward_auth tinyauth:3000 {{
-\t\t\turi /api/auth/caddy
-\t\t}}
+\t@sonarr path /sonarr /sonarr/*
+\thandle @sonarr {{
+{guard}\t\treverse_proxy sonarr-app:8989
+\t}}
 
-\t\t@sonarr path /sonarr /sonarr/*
-\t\thandle @sonarr {{
-\t\t\treverse_proxy sonarr-app:8989
-\t\t}}
+\t@radarr path /radarr /radarr/*
+\thandle @radarr {{
+{guard}\t\treverse_proxy radarr-app:7878
+\t}}
 
-\t\t@radarr path /radarr /radarr/*
-\t\thandle @radarr {{
-\t\t\treverse_proxy radarr-app:7878
-\t\t}}
+\t@prowlarr path /prowlarr /prowlarr/*
+\thandle @prowlarr {{
+{guard}\t\treverse_proxy {gateway}:9696
+\t}}
 
-\t\t@prowlarr path /prowlarr /prowlarr/*
-\t\thandle @prowlarr {{
-\t\t\treverse_proxy {gateway}:9696
-\t\t}}
+\tredir /qbittorrent /qbittorrent/
+\thandle_path /qbittorrent/* {{
+{guard}\t\treverse_proxy {gateway}:8080
+\t}}
 
-\t\tredir /qbittorrent /qbittorrent/
-\t\thandle_path /qbittorrent/* {{
-\t\t\treverse_proxy {gateway}:8080
-\t\t}}
-
-{vpn_country}\t\thandle {{
-\t\t\treverse_proxy homepage:3000
-\t\t}}
+{vpn_country}\thandle {{
+\t\treverse_proxy homepage:3000
 \t}}
 }}
 
