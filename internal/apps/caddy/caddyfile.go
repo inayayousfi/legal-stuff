@@ -10,7 +10,7 @@ import (
 )
 
 // Caddyfile serves every route at the access address. Routes that are not
-// public pass through the admin sign-in first.
+// public or the fallback pass through the admin sign-in first.
 func Caddyfile(v *settings.Values, routes []app.Route) string {
 	mode := v.Get(modeKey)
 	host := v.Get(hostKey)
@@ -24,6 +24,7 @@ func Caddyfile(v *settings.Values, routes []app.Route) string {
 		site = "http://" + host
 	}
 
+	guard := fmt.Sprintf("\t\tforward_auth %s {\n\t\t\turi /api/auth/caddy\n\t\t}\n", tinyauth.Address)
 	var public, protected []string
 	var fallback string
 	var portSites, internal []string
@@ -36,11 +37,11 @@ func Caddyfile(v *settings.Values, routes []app.Route) string {
 			}
 			portSites = append(portSites, fmt.Sprintf("%s:%d {\n%s\treverse_proxy %s\n}\n", site, route.Port, tls, route.Upstream))
 		case route.Fallback:
-			fallback = fmt.Sprintf("\t\thandle {\n\t\t\treverse_proxy %s\n\t\t}\n", route.Upstream)
+			fallback = fmt.Sprintf("\thandle {\n\t\treverse_proxy %s\n\t}\n", route.Upstream)
 		case route.Public:
-			public = append(public, matchedHandle("\t", name, route))
+			public = append(public, matchedHandle(name, route, ""))
 		default:
-			protected = append(protected, matchedHandle("\t\t", name, route))
+			protected = append(protected, matchedHandle(name, route, guard))
 		}
 		if route.Internal != nil {
 			internal = append(internal, fmt.Sprintf(`
@@ -60,12 +61,11 @@ http://:%d {
 	for _, block := range public {
 		out.WriteString(block + "\n")
 	}
-	fmt.Fprintf(&out, "\thandle {\n\t\tforward_auth %s {\n\t\t\turi /api/auth/caddy\n\t\t}\n\n", tinyauth.Address)
 	for _, block := range protected {
 		out.WriteString(block + "\n")
 	}
 	out.WriteString(fallback)
-	out.WriteString("\t}\n}\n")
+	out.WriteString("}\n")
 	for _, block := range portSites {
 		out.WriteString("\n" + block)
 	}
@@ -75,10 +75,11 @@ http://:%d {
 	return out.String()
 }
 
-// matchedHandle forwards one path, keeping or removing the path prefix.
-func matchedHandle(indent, name string, route app.Route) string {
+// matchedHandle forwards one path, keeping or removing the path prefix, after
+// the guard directives, if any.
+func matchedHandle(name string, route app.Route, guard string) string {
 	if route.StripPrefix {
-		return fmt.Sprintf("%[1]sredir %[2]s %[2]s/\n%[1]shandle_path %[2]s/* {\n%[1]s\treverse_proxy %[3]s\n%[1]s}\n", indent, route.Path, route.Upstream)
+		return fmt.Sprintf("\tredir %[1]s %[1]s/\n\thandle_path %[1]s/* {\n%[3]s\t\treverse_proxy %[2]s\n\t}\n", route.Path, route.Upstream, guard)
 	}
-	return fmt.Sprintf("%[1]s@%[2]s path %[3]s %[3]s/*\n%[1]shandle @%[2]s {\n%[1]s\treverse_proxy %[4]s\n%[1]s}\n", indent, name, route.Path, route.Upstream)
+	return fmt.Sprintf("\t@%[1]s path %[2]s %[2]s/*\n\thandle @%[1]s {\n%[4]s\t\treverse_proxy %[3]s\n\t}\n", name, route.Path, route.Upstream, guard)
 }

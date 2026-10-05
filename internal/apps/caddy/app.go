@@ -58,7 +58,7 @@ var modes = []flow.Option{
 	{
 		Value:  Domain,
 		Label:  "Own domain with a Let's Encrypt certificate",
-		Detail: "Pros: every device trusts the certificate, and the pages are reachable from anywhere.\nCons: you need a domain name and a router that forwards ports to this computer. The pages are reachable from the whole internet, protected by the admin sign-in.",
+		Detail: "Pros: every device trusts the certificate, and the pages are reachable from anywhere.\nCons: you need a domain name and a router that forwards ports to this computer. The pages are reachable from the whole internet; the administration pages are protected by the admin sign-in.",
 	},
 	{
 		Value:  Local,

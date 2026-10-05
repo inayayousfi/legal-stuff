@@ -22,23 +22,26 @@ func caddyfile(mode, host, gateway string) string {
 	return caddy.Caddyfile(values, caddy.Routes(apps.All, values))
 }
 
-// split returns the part before the sign-in check and the part inside it.
-func split(t *testing.T, file string) (string, string) {
+// guarded reports whether the block that forwards to upstream checks the sign-in first.
+func guarded(t *testing.T, file, upstream string) bool {
 	t.Helper()
-	public, protected, ok := strings.Cut(file, "forward_auth tinyauth:3000")
-	if !ok {
-		t.Fatalf("no sign-in check:\n%s", file)
+	end := strings.Index(file, "reverse_proxy "+upstream+"\n")
+	if end < 0 {
+		t.Fatalf("no route to %s:\n%s", upstream, file)
 	}
-	return public, protected
+	block := file[strings.LastIndex(file[:end], "handle"):end]
+	return strings.Contains(block, "forward_auth tinyauth:3000")
 }
 
-func TestJellyfinStaysOutsideTheSignInAndAdminPagesInside(t *testing.T) {
-	public, protected := split(t, caddyfile("domain", "media.example.com", "gluetun"))
-	if !strings.Contains(public, "reverse_proxy jellyfin-app:8096") {
-		t.Error("Jellyfin is behind the sign-in")
+func TestJellyfinAndHomepageStayOutsideTheSignInAndAdminPagesInside(t *testing.T) {
+	file := caddyfile("domain", "media.example.com", "gluetun")
+	for _, upstream := range []string{"jellyfin-app:8096", "homepage:3000"} {
+		if guarded(t, file, upstream) {
+			t.Errorf("%s is behind the sign-in", upstream)
+		}
 	}
-	for _, upstream := range []string{"sonarr-app:8989", "radarr-app:7878", "gluetun:9696", "gluetun:8080", "vpn-country:8090", "homepage:3000"} {
-		if !strings.Contains(protected, "reverse_proxy "+upstream) {
+	for _, upstream := range []string{"sonarr-app:8989", "radarr-app:7878", "gluetun:9696", "gluetun:8080", "vpn-country:8090"} {
+		if !guarded(t, file, upstream) {
 			t.Errorf("%s is not behind the sign-in", upstream)
 		}
 	}

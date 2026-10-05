@@ -62,7 +62,7 @@ func configure(e *app.Env) error {
 	}
 	answers, err := e.UI.Ask(flow.Screen{
 		Title: "Admin sign-in",
-		Body: `Create one username and password. They protect Homepage, qBittorrent, Sonarr, Radarr, Prowlarr, and the VPN country page, which no longer ask for their own logins. Jellyfin and Seerr keep their own logins.
+		Body: `Create one username and password. They protect qBittorrent, Sonarr, Radarr, Prowlarr, and the VPN country page, which no longer ask for their own logins. Jellyfin and Seerr keep their own logins.
 
 The following prompts request the username and password.`,
 		Fields: fields,
